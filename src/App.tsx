@@ -15,6 +15,7 @@ import { OfflineAssistant } from './assistant/offline';
 import type { Assistant } from './assistant/types';
 import { demoSignIn, fetchMe, gmailSignIn } from './signIn';
 import { HttpAdminApi, type AdminApi, type Role } from './admin/api';
+import { httpReportBug, type ReportBug } from './lib/diagnostics';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -144,6 +145,11 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.sessionUrl, role]
   );
 
+  const reportBug = useMemo<ReportBug | null>(
+    () => (mode === 'gmail' && auth && config.bugReportUrl ? httpReportBug(config.bugReportUrl, () => auth.token()) : null),
+    [mode, auth, config.bugReportUrl]
+  );
+
   const signOut = () => {
     session?.provider.signOut?.();
     setReason('signed-out');
@@ -196,6 +202,7 @@ function Session({ config }: { config: AppConfig }) {
       assistant={session.assistant}
       role={mode === 'demo' ? 'super_admin' : role}
       admin={admin}
+      reportBug={reportBug}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
       onSignOut={signOut}

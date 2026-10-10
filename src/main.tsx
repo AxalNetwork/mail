@@ -8,6 +8,9 @@ import '@fontsource/roboto-mono/400.css';
 import '@fontsource/roboto-mono/500.css';
 import './styles/app.css';
 import { App } from './App';
+import { captureErrors } from './lib/diagnostics';
+
+captureErrors();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

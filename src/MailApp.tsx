@@ -13,6 +13,8 @@ import { BulkEmail } from './components/bulk/BulkEmail';
 import { SignatureAdmin } from './components/admin/SignatureAdmin';
 import { MembersAdmin } from './components/admin/MembersAdmin';
 import { ROLE_LABEL, type AdminApi, type Role } from './admin/api';
+import { BugReportDialog } from './components/BugReportDialog';
+import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
 import { plural } from './lib/format';
@@ -33,6 +35,8 @@ interface Props {
   admin?: AdminApi | null;
   /** Open another mailbox; `own` is the user's own address. Without it, picking only relabels (demo). */
   onSwitchMailbox?: (addr: string, own: string) => void;
+  /** Files a bug report as a GitHub issue; absent when the backend has none set up. */
+  reportBug?: ReportBug | null;
 }
 
 interface ListState {
@@ -50,7 +54,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug }: Props) {
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -69,6 +73,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const [bugOpen, setBugOpen] = useState(false);
 
   const composerRef = useRef<ComposerHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -341,6 +346,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
         account={boot.account} mailbox={mailbox} mailboxes={boot.mailboxes} query={query} searchRef={searchRef} signOutLabel={signOutLabel}
         onPickMailbox={addr => (onSwitchMailbox && addr !== mailbox ? onSwitchMailbox(addr, boot.account.email) : setMailbox(addr))} onSearch={onSearch} onToggleAssistant={() => setAiOpen(o => !o)} onBulk={() => go('bulk')}
         onCompose={() => openCompose({})} onToggleNav={() => setNavOpen(o => !o)} onSignOut={onSignOut}
+        onReportBug={reportBug ? () => setBugOpen(true) : undefined}
       />
       <div className="body">
         <Sidebar view={view} counts={counts} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
@@ -394,6 +400,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           )}
         </main>
       </div>
+      {bugOpen && reportBug && <BugReportDialog view={view} report={reportBug} onClose={() => setBugOpen(false)} />}
       {compose && (
         <Composer
           key={compose.key}

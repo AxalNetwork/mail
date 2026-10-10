@@ -6,6 +6,7 @@ import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
 import { googleClientId } from './config';
+import { bugReportsEnabled, fileBugReport } from './bugs';
 
 export type { Env };
 
@@ -41,7 +42,8 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
         orgDomain: env.ORG_DOMAIN || allowedDomains(env)[0] || '',
         assistant: !!env.ANTHROPIC_API_KEY,
         notes: !!env.DB,
-        session: !!env.DB
+        session: !!env.DB,
+        bugReports: bugReportsEnabled(env)
       },
       200,
       { 'Cache-Control': 'public, max-age=60' }
@@ -63,6 +65,8 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === 'GET') return json({ notes: await listNotes(env.DB, url.searchParams.get('key')) });
     if (method === 'POST') return json({ note: await addNote(env.DB, user, await readJson(req)) }, 201);
   }
+
+  if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
   if (path === '/api/mailboxes' && method === 'GET') return mailboxes.listForUser(env, user);
   if (path.startsWith('/api/mailboxes/')) return mailboxes.proxy(req, env, user, url);

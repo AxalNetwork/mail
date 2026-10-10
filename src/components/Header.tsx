@@ -17,6 +17,7 @@ interface Props {
   onCompose: () => void;
   onToggleNav: () => void;
   onSignOut: () => void;
+  onReportBug?: () => void;
 }
 
 export function Header(p: Props) {
@@ -80,6 +81,9 @@ export function Header(p: Props) {
             <div className="popover" style={{ top: 40, right: 0, width: 260 }} role="menu">
               <span className="mono-label">Signed in</span>
               <div style={{ padding: '0 8px 8px', overflowWrap: 'anywhere' }}>{p.account?.email}</div>
+              {p.onReportBug && (
+                <button className="pop-item" role="menuitem" onClick={() => { me.setOpen(false); p.onReportBug!(); }}>Report a bug</button>
+              )}
               <button className="pop-item" role="menuitem" onClick={() => { me.setOpen(false); p.onSignOut(); }}>{p.signOutLabel}</button>
             </div>
           )}

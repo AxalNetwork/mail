@@ -605,3 +605,14 @@ button.attachment:hover { background: var(--bg); }
 .trow.members { grid-template-columns: minmax(0, 1.4fr) 130px 110px minmax(0, 2fr) 100px; padding: 11px 16px; min-width: 760px; }
 .trow.members.head { padding: 9px 16px; }
 .admin-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+
+/* Bug report */
+.bug-body { padding: 4px 22px 18px; display: flex; flex-direction: column; gap: 12px; }
+.bug-body p { margin: 0; line-height: 1.5; }
+.bug-body label:not(.check-row) { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.bug-body .input, .bug-body .textarea { color: var(--text); font-size: 13px; }
+.bug-body .textarea { resize: vertical; min-height: 110px; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.check-row input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.bug-context { margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+.bug-body .notice { display: flex; gap: 8px; }

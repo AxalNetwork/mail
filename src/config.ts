@@ -10,6 +10,8 @@ export interface AppConfig {
   notesUrl: string;
   /** Endpoint that checks a signed-in Google account against Axal VC members, or ''. */
   sessionUrl: string;
+  /** Endpoint that files bug reports as GitHub issues, or ''. */
+  bugReportUrl: string;
 }
 
 const fromEnv: AppConfig = {
@@ -17,7 +19,8 @@ const fromEnv: AppConfig = {
   orgDomain: (env.VITE_ORG_DOMAIN as string | undefined)?.trim().toLowerCase() || '',
   assistantUrl: (env.VITE_ASSISTANT_URL as string | undefined)?.trim() || '',
   notesUrl: '',
-  sessionUrl: ''
+  sessionUrl: '',
+  bugReportUrl: ''
 };
 
 interface ServerConfig {
@@ -26,6 +29,7 @@ interface ServerConfig {
   assistant?: boolean;
   notes?: boolean;
   session?: boolean;
+  bugReports?: boolean;
 }
 
 /**
@@ -44,7 +48,8 @@ export async function loadConfig(): Promise<AppConfig> {
       orgDomain: (s.orgDomain || fromEnv.orgDomain).toLowerCase(),
       assistantUrl: s.assistant ? '/api/assistant' : fromEnv.assistantUrl,
       notesUrl: s.notes ? '/api/notes' : '',
-      sessionUrl: s.session ? '/api/session' : ''
+      sessionUrl: s.session ? '/api/session' : '',
+      bugReportUrl: s.bugReports ? '/api/bug-report' : ''
     };
   } catch {
     return fromEnv;

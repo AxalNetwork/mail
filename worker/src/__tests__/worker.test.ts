@@ -10,7 +10,7 @@ import type { Env } from '../env';
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -34,6 +34,8 @@ let anthropicCalls: { headers: Headers; body: Record<string, unknown> }[];
 let claudeReply: Record<string, unknown>;
 let gmailCalls: { url: string; method: string; auth: string | null; body: string }[];
 let delegationError: string | null;
+let githubCalls: { url: string; auth: string | null; body: Record<string, unknown> }[];
+let githubStatus: number[];
 
 function mockFetch(tokens: Record<string, Record<string, unknown>>) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -58,6 +60,14 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
       gmailCalls.push({ url: url.pathname + url.search, method: req.method, auth: req.headers.get('Authorization'), body: req.method === 'GET' ? '' : await req.text() });
       if (url.pathname.endsWith('/profile')) return Response.json({ emailAddress: (req.headers.get('Authorization') || '').replace('Bearer dwd:', '') });
       return Response.json({ ok: true });
+    }
+    if (url.hostname === 'api.github.com') {
+      const body = await req.json() as Record<string, unknown>;
+      githubCalls.push({ url: url.pathname, auth: req.headers.get('Authorization'), body });
+      const status = githubStatus.shift() ?? 201;
+      return status === 201
+        ? Response.json({ number: 41 + githubCalls.length, html_url: 'https://github.com/AxalNetwork/mail/issues/' + (41 + githubCalls.length) }, { status })
+        : Response.json({ message: 'Validation Failed' }, { status });
     }
     if (url.hostname === 'api.anthropic.com') {
       anthropicCalls.push({ headers: req.headers, body: await req.json() });
@@ -100,6 +110,8 @@ beforeEach(() => {
   anthropicCalls = [];
   gmailCalls = [];
   delegationError = null;
+  githubCalls = [];
+  githubStatus = [];
   env = {
     ASSETS: { fetch: vi.fn(async () => new Response('<!doctype html>app', { headers: { 'Content-Type': 'text/html' } })) } as unknown as Fetcher,
     DB: fakeD1(), GOOGLE_CLIENT_ID: 'client-1', ALLOWED_DOMAINS: 'axal.vc', ORG_DOMAIN: 'axal.vc', ANTHROPIC_API_KEY: 'sk-test',
@@ -128,7 +140,7 @@ describe('routing', () => {
 
   it('exposes public config', async () => {
     const r = await call('/api/config');
-    expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true });
+    expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true, bugReports: false });
     env.ANTHROPIC_API_KEY = undefined;
     expect((await (await call('/api/config')).json() as { assistant: boolean }).assistant).toBe(false);
   });
@@ -368,5 +380,48 @@ describe('shared mailboxes', () => {
     const r = await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' });
     expect(r.status).toBe(502);
     expect((await r.json() as { error: string }).error).toContain('Domain-wide delegation');
+  });
+});
+
+describe('bug reports', () => {
+  const report = { title: 'Attachments fail for julian@axal.vc', description: 'Forward from maya@n.example, then download.', context: { view: 'inbox', path: '/', build: 'abc1234', userAgent: 'UA|x', viewport: '1280×800', errors: ['Unhandled: boom for ceo@axal.vc'] } };
+
+  it('is off without a GitHub token', async () => {
+    expect((await post('/api/bug-report', 'good', report)).status).toBe(503);
+  });
+
+  it('files a public issue with addresses removed and keeps the reporter in D1', async () => {
+    env.GITHUB_TOKEN = 'ghp_test';
+    expect(await (await call('/api/config')).json()).toMatchObject({ bugReports: true });
+    const r = await post('/api/bug-report', 'good', report);
+    expect(r.status).toBe(201);
+    expect(await r.json()).toEqual({ number: 42, url: 'https://github.com/AxalNetwork/mail/issues/42' });
+    const c = githubCalls[0];
+    expect(c.url).toBe('/repos/AxalNetwork/mail/issues');
+    expect(c.auth).toBe('Bearer ghp_test');
+    expect(c.body.labels).toEqual(['bug']);
+    const all = JSON.stringify(c.body);
+    expect(all).not.toMatch(/@axal\.vc|@n\.example/);
+    expect(c.body.title).toBe('Attachments fail for [email removed]');
+    expect(String(c.body.body)).toContain('`abc1234`');
+    expect(String(c.body.body)).toContain('UA x');
+    const row = await env.DB.prepare('SELECT issue_number, member_email FROM bug_reports').first();
+    expect(row).toEqual({ issue_number: 42, member_email: 'julian@axal.vc' });
+  });
+
+  it('retries without the label, reports GitHub failures, and limits volume', async () => {
+    env.GITHUB_TOKEN = 'ghp_test';
+    githubStatus = [422];
+    expect((await post('/api/bug-report', 'good', report)).status).toBe(201);
+    expect(githubCalls.map(c => c.body.labels)).toEqual([['bug'], []]);
+
+    githubStatus = [401];
+    const bad = await post('/api/bug-report', 'good', report);
+    expect(bad.status).toBe(502);
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM bug_reports').first())).toEqual({ n: 1 });
+
+    expect((await post('/api/bug-report', 'good', { title: 'x' })).status).toBe(400);
+    for (let i = 0; i < 4; i++) expect((await post('/api/bug-report', 'good', report)).status).toBe(201);
+    expect((await post('/api/bug-report', 'good', report)).status).toBe(429);
   });
 });

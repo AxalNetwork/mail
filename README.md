@@ -66,6 +66,8 @@ Configuration lives in the Worker, not in the build: the frontend reads `/api/co
 | `SUPER_ADMINS` | var, `guillaume.lauzier@axal.vc` | Members with full rights in *Members & access*. They can't be suspended or demoted from the app. |
 | `ANTHROPIC_API_KEY` | secret | Assistant; without it the assistant endpoints answer 503 and the UI falls back to templates |
 | `GOOGLE_SERVICE_ACCOUNT` | secret | Service account key (JSON) with domain-wide delegation; enables shared mailboxes |
+| `GITHUB_TOKEN` | secret | Enables *Report a bug* (account menu): a fine-grained token with **Issues: Read and write** on the repository |
+| `GITHUB_REPO` | var, default `AxalNetwork/mail` | Where bug reports are filed |
 | `GMAIL_REFRESH_TOKEN` + `GMAIL_CLIENT_SECRET` | secrets | Instead of a service account: a refresh token (gmail.modify, issued to the client ID) for one mailbox, which super admins can then share |
 
 ## Google OAuth client
@@ -131,6 +133,12 @@ UPDATE members SET status = 'suspended' WHERE email = 'julian@axal.vc';
 
 A suspension applies to new sign-ins at once, and to open sessions within 5 minutes.
 
+## Bug reports
+
+*Report a bug* in the account menu files a GitHub issue (label `bug`) through the Worker. The repository is public, so the form says so, the issue never names the reporter, and email addresses are removed from everything it sends. Who filed which issue is kept in D1 (`bug_reports`) for admins. The optional technical details are the screen, path, build, browser, window size and the last few app errors. Each member can file 5 reports an hour.
+
+To turn it on: GitHub → Settings → Developer settings → Fine-grained tokens → *Generate new token*, resource owner **AxalNetwork**, repository **mail**, permission **Issues: Read and write**. Then Cloudflare → Workers & Pages → mail → Settings → Variables and secrets → add the secret `GITHUB_TOKEN` and deploy.
+
 ## Backend API
 
 All endpoints except `config` and `health` need `Authorization: Bearer <Google access token>` from an active member. Writes from other origins are refused.
@@ -145,6 +153,7 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/assistant/draft` | Draft from an instruction and/or the thread |
 | `POST /api/assistant/rewrite` | `shorter`, `formal`, `warmer`, `clarity`, `translate` (French) |
 | `POST /api/assistant/persona` | Bulk email subject and body for one persona, with merge tokens |
+| `POST /api/bug-report` | File a bug report as a GitHub issue |
 | `GET /api/mailboxes` | Shared mailboxes this member may open |
 | `/api/mailboxes/<mailbox>/(upload/)gmail/v1/users/me/…` | Gmail API for a shared mailbox, limited to what the mail client uses |
 | `GET/POST /api/admin/members` · `POST/DELETE /api/admin/links` | Members, roles, status and linked accounts (admins) |

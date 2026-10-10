@@ -20,6 +20,8 @@ function buildConfig(): Plugin {
 
 export default defineConfig({
   plugins: [react(), buildConfig()],
+  // Shown in bug reports: the commit being built (GitHub Actions or Workers Builds), else "dev".
+  define: { __APP_BUILD__: JSON.stringify((process.env.GITHUB_SHA || process.env.WORKERS_CI_COMMIT_SHA || 'dev').slice(0, 7)) },
   // `npm run dev:api` serves the Worker on 8787; the dev server forwards /api to it.
   server: { port: 5173, proxy: { '/api': 'http://localhost:8787' } },
   test: {
