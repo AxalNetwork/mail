@@ -37,7 +37,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      # A repository variable or secret; the client ID is public either way.
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLIENT_ID }}
     steps:
       - name: Check Cloudflare credentials
         id: creds
@@ -92,6 +93,12 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         # A new custom domain can take a few minutes to get its certificate.
         run: |
+          # Cloudflare bot protection on the zone may challenge GitHub's runners;
+          # that says nothing about the deploy, which wrangler already confirmed.
+          if curl -sS -o /dev/null -D - https://mail.axal.vc/api/health | grep -qi '^cf-mitigated: challenge'; then
+            echo "::warning::Cloudflare's bot protection challenged this check, so mail.axal.vc can't be verified from GitHub. The deploy itself succeeded."
+            exit 0
+          fi
           for i in $(seq 1 18); do
             if curl -fsS https://mail.axal.vc/api/health | grep -q '"ok":true' \
               && curl -fsS https://mail.axal.vc/ | grep -q '<div id="root">'; then

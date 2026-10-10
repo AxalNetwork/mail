@@ -44,7 +44,7 @@ Still needed, once:
    | `CLOUDFLARE_API_TOKEN` | Secret | API token with *Workers Scripts: Edit*, *Workers Routes: Edit*, *D1: Edit* and *Zone → DNS: Edit* on `axal.vc` (the "Edit Cloudflare Workers" template plus D1) |
    | `CLOUDFLARE_ACCOUNT_ID` | Secret | The account that owns the `axal-mail` D1 database |
    | `ANTHROPIC_API_KEY` | Secret | Enables the assistant (summaries, drafts, rewrites, bulk persona messages) |
-   | `GOOGLE_CLIENT_ID` | Variable | The OAuth Web client ID (public) |
+   | `GOOGLE_CLIENT_ID` | Variable or secret | The OAuth Web client ID (public) |
 
 4. Push to the default branch. `.github/workflows/deploy.yml` tests everything, applies migrations, deploys the Worker with the frontend, sets the Anthropic key, and checks `https://mail.axal.vc/api/health`.
 
