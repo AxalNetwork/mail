@@ -5,6 +5,10 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Every `wrangler deploy` (GitHub Actions, Cloudflare Workers Builds, or by
+  // hand) builds the frontend into dist/ first.
+  "build": { "command": "npx vite build", "watch_dir": "src" },
+
   // Frontend: the Vite build. Cloudflare serves these files directly; only
   // /api/* runs the Worker. Unknown paths fall back to index.html (SPA).
   "assets": {
@@ -28,9 +32,11 @@
     }
   ],
 
+  // GOOGLE_CLIENT_ID (the public OAuth Web client ID) is set in the dashboard
+  // (Workers & Pages → mail → Settings → Variables) or with --var at deploy;
+  // keep_vars stops a deploy from erasing dashboard-set variables.
+  "keep_vars": true,
   "vars": {
-    // Public OAuth Web client ID. Set here, or pass --var GOOGLE_CLIENT_ID:… at deploy.
-    "GOOGLE_CLIENT_ID": "",
     "ALLOWED_DOMAINS": "axal.vc",
     "ORG_DOMAIN": "axal.vc"
   },

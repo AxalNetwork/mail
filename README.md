@@ -48,6 +48,8 @@ Still needed, once:
 
 4. Push to the default branch. `.github/workflows/deploy.yml` tests everything, applies migrations, deploys the Worker with the frontend, sets the Anthropic key, and checks `https://mail.axal.vc/api/health`.
 
+**Deploying from Cloudflare instead of GitHub Actions:** connecting the repository under Workers & Pages → mail → Settings → Build works as is: `wrangler deploy` runs the frontend build itself (`build.command` in `wrangler.jsonc`), and no API token is needed. Use one pipeline or the other; if you use Cloudflare's, delete the `CLOUDFLARE_API_TOKEN` secret so GitHub doesn't deploy too. Set `GOOGLE_CLIENT_ID` under the Worker's Settings → Variables and Secrets; deploys keep it (`keep_vars`). Cloudflare's build doesn't apply D1 migrations; run `npm run db:migrate` when a new one is added.
+
 The Worker is named `mail` (`wrangler.jsonc`), so the deploy replaces a `mail` Worker created in the dashboard.
 
 **Nothing at mail.axal.vc?** Attach the domain as a Worker **custom domain**, not a DNS record. A CNAME from `mail.axal.vc` to `*.workers.dev` is not served. Delete any `mail` CNAME/A record under DNS → Records; then the deploy (or Workers & Pages → mail → Settings → Domains & Routes → Add → Custom domain) creates the right record.
