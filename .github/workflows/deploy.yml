@@ -107,7 +107,7 @@ jobs:
               echo "::warning::The Worker has no Google client ID (GOOGLE_CLIENT_ID or GMAIL_CLIENT_ID), so nobody can sign in to mail.axal.vc."
             fi
             echo "$CONFIG" | grep -q '"bugReports":true' || echo "::notice::Report a bug is off: the Worker has no GITHUB_TOKEN secret."
-            echo "$CONFIG" | grep -q '"assistant":true' || echo "::notice::The assistant uses templates: the Worker has no ANTHROPIC_API_KEY secret.
+            echo "$CONFIG" | grep -q '"assistant":true' || echo "::notice::The assistant uses templates: the Worker has no ANTHROPIC_API_KEY secret."
           fi
           # Cloudflare bot protection on the zone may challenge GitHub's runners;
           # that says nothing about the deploy, which wrangler already confirmed.
