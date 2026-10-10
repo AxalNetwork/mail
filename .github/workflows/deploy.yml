@@ -59,20 +59,21 @@ jobs:
         run: npm ci
       - if: steps.creds.outputs.ok == 'true'
         run: npx vite build
-      - name: Check the token can reach the account
+      - name: Check database access
+        id: d1
         if: steps.creds.outputs.ok == 'true'
-        # Lists the accounts this token can use, so a wrong CLOUDFLARE_ACCOUNT_ID
-        # (e.g. a zone ID) or a token scoped to another account is obvious.
+        # Lists the token's accounts and databases, so a token without D1
+        # access (Cloudflare codes 7403 / 10000) is obvious from the log.
         run: |
           npx wrangler whoami || true
-          echo "D1 databases this token can see:"
-          npx wrangler d1 list || true
-          if ! npx wrangler d1 info axal-mail; then
-            echo "::error::The Cloudflare token can't open the axal-mail database in account $CLOUDFLARE_ACCOUNT_ID (Cloudflare code 7403). Set CLOUDFLARE_ACCOUNT_ID to the Account ID shown under Workers & Pages (not a Zone ID), and give the token Account → D1: Edit and Workers Scripts: Edit on that account, plus Zone → Workers Routes: Edit and DNS: Edit on axal.vc."
-            exit 1
+          if npx wrangler d1 info axal-mail; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::The CLOUDFLARE_API_TOKEN secret can't use D1 (axal-mail), so migrations are skipped and the app is deployed anyway. Give that token Account → D1: Edit, or apply new migrations with npm run db:migrate."
           fi
       - name: Apply database migrations
-        if: steps.creds.outputs.ok == 'true'
+        if: steps.creds.outputs.ok == 'true' && steps.d1.outputs.ok == 'true'
         run: npx wrangler d1 migrations apply axal-mail --remote
       - name: Deploy Worker and assets
         if: steps.creds.outputs.ok == 'true'
