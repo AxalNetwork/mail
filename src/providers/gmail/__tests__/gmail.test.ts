@@ -94,7 +94,7 @@ describe('GmailProvider', () => {
     const page = await new GmailProvider(fakeAuth()).listThreads({ folder: 'inbox', category: 'primary' });
     const list = calls.find(c => c.url.pathname.endsWith('/threads'))!;
     expect(list.url.searchParams.getAll('labelIds')).toEqual(['INBOX']);
-    expect(list.url.searchParams.get('q')).toBe('category:primary');
+    expect(list.url.searchParams.get('q')).toBe('-category:social -category:promotions -category:updates -category:forums');
     const meta = calls.find(c => c.url.pathname.endsWith('/threads/t1'))!;
     expect(meta.url.searchParams.get('format')).toBe('metadata');
     expect(page).toMatchObject({ nextPageToken: 'n2', threads: [{ id: 't1', from: 'Maya' }] });

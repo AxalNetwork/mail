@@ -17,6 +17,7 @@ const GMAIL = 'https://gmail.googleapis.com/';
 const PEOPLE = 'https://people.googleapis.com/v1';
 const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const PAGE_SIZE = 25;
+const PRIMARY_QUERY = '-category:social -category:promotions -category:updates -category:forums';
 const METADATA_HEADERS = ['From', 'To', 'Subject', 'Date', 'Content-Type'];
 
 interface SendAs {
@@ -233,7 +234,9 @@ export class GmailProvider implements MailProvider {
     const query: Record<string, string | number | string[] | undefined> = { maxResults: PAGE_SIZE, pageToken: q.pageToken };
     switch (q.folder) {
       case 'inbox':
-        if (!q.category || q.category === 'primary') { query.labelIds = ['INBOX']; query.q = 'category:primary'; }
+        // "Not in another tab" rather than category:primary, which matches
+        // nothing for accounts with Gmail's inbox tabs turned off.
+        if (!q.category || q.category === 'primary') { query.labelIds = ['INBOX']; query.q = PRIMARY_QUERY; }
         else query.labelIds = ['INBOX', q.category];
         break;
       case 'starred': query.labelIds = ['STARRED']; break;
