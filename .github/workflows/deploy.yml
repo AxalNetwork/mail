@@ -37,6 +37,9 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # GitHub reserves the GITHUB_ prefix for repository secrets, so the bug
+      # report token is stored as BUG_REPORTS_TOKEN and set on the Worker as GITHUB_TOKEN.
+      BUG_REPORTS_TOKEN: ${{ secrets.BUG_REPORTS_TOKEN }}
       # A repository variable or secret; the client ID is public either way.
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLIENT_ID }}
     steps:
@@ -90,6 +93,9 @@ jobs:
       - name: Set the assistant API key
         if: steps.creds.outputs.ok == 'true' && env.ANTHROPIC_API_KEY != ''
         run: printf '%s' "$ANTHROPIC_API_KEY" | npx wrangler secret put ANTHROPIC_API_KEY
+      - name: Set the bug report token
+        if: steps.creds.outputs.ok == 'true' && env.BUG_REPORTS_TOKEN != ''
+        run: printf '%s' "$BUG_REPORTS_TOKEN" | npx wrangler secret put GITHUB_TOKEN
       - name: Smoke test
         if: steps.creds.outputs.ok == 'true'
         # A new custom domain can take a few minutes to get its certificate.
@@ -106,7 +112,7 @@ jobs:
             if echo "$CONFIG" | grep -q '"googleClientId":""'; then
               echo "::warning::The Worker has no Google client ID (GOOGLE_CLIENT_ID or GMAIL_CLIENT_ID), so nobody can sign in to mail.axal.vc."
             fi
-            echo "$CONFIG" | grep -q '"bugReports":true' || echo "::notice::Report a bug is off: the Worker has no GITHUB_TOKEN secret."
+            echo "$CONFIG" | grep -q '"bugReports":true' || echo "::notice::Report a bug is off: the Worker has no GITHUB_TOKEN secret (add it on the Worker, or as the BUG_REPORTS_TOKEN repository secret)."
             echo "$CONFIG" | grep -q '"assistant":true' || echo "::notice::The assistant uses templates: the Worker has no ANTHROPIC_API_KEY secret."
           fi
           # Cloudflare bot protection on the zone may challenge GitHub's runners;

@@ -66,7 +66,7 @@ Configuration lives in the Worker, not in the build: the frontend reads `/api/co
 | `SUPER_ADMINS` | var, `guillaume.lauzier@axal.vc` | Members with full rights in *Members & access*. They can't be suspended or demoted from the app. |
 | `ANTHROPIC_API_KEY` | secret | Assistant; without it the assistant endpoints answer 503 and the UI falls back to templates |
 | `GOOGLE_SERVICE_ACCOUNT` | secret | Service account key (JSON) with domain-wide delegation; enables shared mailboxes |
-| `GITHUB_TOKEN` | secret | Enables *Report a bug* (account menu): a fine-grained token with **Issues: Read and write** on the repository |
+| `GITHUB_TOKEN` | secret (or the `BUG_REPORTS_TOKEN` GitHub secret, which the deploy copies) | Enables *Report a bug* (account menu): a fine-grained token with **Issues: Read and write** on the repository |
 | `GITHUB_REPO` | var, default `AxalNetwork/mail` | Where bug reports are filed |
 | `GMAIL_REFRESH_TOKEN` + `GMAIL_CLIENT_SECRET` | secrets | Instead of a service account: a refresh token (gmail.modify, issued to the client ID) for one mailbox, which super admins can then share |
 
