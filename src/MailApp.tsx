@@ -11,6 +11,8 @@ import { Composer, type ComposerHandle } from './components/composer/Composer';
 import { forwardSubject, newCompose, replySubject, type ComposeState } from './components/composer/state';
 import { BulkEmail } from './components/bulk/BulkEmail';
 import { SignatureAdmin } from './components/admin/SignatureAdmin';
+import { MembersAdmin } from './components/admin/MembersAdmin';
+import { ROLE_LABEL, type AdminApi, type Role } from './admin/api';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
 import { plural } from './lib/format';
@@ -25,6 +27,12 @@ interface Props {
   assistant: Assistant;
   signOutLabel: string;
   onSignOut: () => void;
+  /** The signed-in member's role, once known. */
+  role?: Role | null;
+  /** Members & access administration (admins only). */
+  admin?: AdminApi | null;
+  /** Open another mailbox; `own` is the user's own address. Without it, picking only relabels (demo). */
+  onSwitchMailbox?: (addr: string, own: string) => void;
 }
 
 interface ListState {
@@ -42,7 +50,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox }: Props) {
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -75,7 +83,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut }: Props)
         provider.account(), provider.identities(), provider.mailboxes(), provider.categories()
       ]);
       setBoot({ account, identities, mailboxes, categories });
-      setMailbox(m => m || account.email);
+      setMailbox(m => m || provider.mailbox || account.email);
       setCategory(c => c || categories[0]?.id || '');
     } catch (e) {
       setBootError(errorText(e));
@@ -145,7 +153,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut }: Props)
   /** Switch view; `select` opens a specific conversation instead of the first one. */
   const go = (v: View, select?: string) => {
     setNavOpen(false);
-    if (v === 'bulk' || v === 'admin') setCompose(c => (c ? { ...c, minimized: true } : c));
+    if (v === 'bulk' || v === 'admin' || v === 'members') setCompose(c => (c ? { ...c, minimized: true } : c));
     if (v !== 'search') setQuery('');
     autoSelect.current = !select;
     setSelId(select || null);
@@ -331,12 +339,12 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut }: Props)
       )}
       <Header
         account={boot.account} mailbox={mailbox} mailboxes={boot.mailboxes} query={query} searchRef={searchRef} signOutLabel={signOutLabel}
-        onPickMailbox={setMailbox} onSearch={onSearch} onToggleAssistant={() => setAiOpen(o => !o)} onBulk={() => go('bulk')}
+        onPickMailbox={addr => (onSwitchMailbox && addr !== mailbox ? onSwitchMailbox(addr, boot.account.email) : setMailbox(addr))} onSearch={onSearch} onToggleAssistant={() => setAiOpen(o => !o)} onBulk={() => go('bulk')}
         onCompose={() => openCompose({})} onToggleNav={() => setNavOpen(o => !o)} onSignOut={onSignOut}
       />
       <div className="body">
-        <Sidebar view={view} counts={counts} open={navOpen} hide={{}} onGo={go} onCompose={() => openCompose({})}
-          footer={demo ? 'Signed in with your Axal VC account' : 'Connected to Gmail · ' + boot.account.email} />
+        <Sidebar view={view} counts={counts} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
+          footer={demo ? 'Signed in with your Axal VC account' : (provider.mailbox ? 'Shared mailbox · ' + provider.mailbox : 'Connected to Gmail · ' + boot.account.email) + (role && role !== 'member' ? ' · ' + ROLE_LABEL[role] : '')} />
         <main className={'main' + (selId ? ' has-sel' : '')} onClick={() => navOpen && setNavOpen(false)}>
           {isList && (
             <>
@@ -377,7 +385,8 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut }: Props)
               onDone={(folder) => { reload(); go(folder); }} />
           )}
           {view === 'admin' && <SignatureAdmin provider={provider} onProfileChanged={load} />}
-          {!isList && view !== 'bulk' && view !== 'admin' && (
+          {view === 'members' && <MembersAdmin api={admin || null} role={role || 'member'} demo={demo} />}
+          {!isList && view !== 'bulk' && view !== 'admin' && view !== 'members' && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

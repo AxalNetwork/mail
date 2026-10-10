@@ -47,6 +47,8 @@ export interface MailProvider {
   readonly capabilities: Capabilities;
   /** Domain treated as internal for external-recipient warnings ('' = none). */
   readonly orgDomain: string;
+  /** Address of the shared mailbox being shown; undefined for the user's own. */
+  readonly mailbox?: string;
 
   account(): Promise<Account>;
   mailboxes(): Promise<Mailbox[]>;

@@ -32,13 +32,16 @@
     }
   ],
 
-  // GOOGLE_CLIENT_ID (the public OAuth Web client ID) is set in the dashboard
-  // (Workers & Pages → mail → Settings → Variables) or with --var at deploy;
+  // GOOGLE_CLIENT_ID (the public OAuth Web client ID) is set in the dashboard,
+  // either on the Worker (Settings → Variables and secrets) or as a Workers
+  // Builds build variable (Settings → Build), or with --var at deploy;
   // keep_vars stops a deploy from erasing dashboard-set variables.
   "keep_vars": true,
   "vars": {
     "ALLOWED_DOMAINS": "axal.vc",
-    "ORG_DOMAIN": "axal.vc"
+    "ORG_DOMAIN": "axal.vc",
+    // Full rights in Administration, including granting admin; can't be suspended from the app
+    "SUPER_ADMINS": "guillaume.lauzier@axal.vc"
   },
   // Secrets (wrangler secret put): ANTHROPIC_API_KEY
 

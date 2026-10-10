@@ -4,12 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import worker from '../index';
 import { clearAuthCache } from '../auth';
+import { clearDelegationCache } from '../delegation';
 import type { Env } from '../env';
 
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -31,14 +32,26 @@ const ORIGIN = 'https://mail.axal.vc';
 let env: Env;
 let anthropicCalls: { headers: Headers; body: Record<string, unknown> }[];
 let claudeReply: Record<string, unknown>;
+let gmailCalls: { url: string; method: string; auth: string | null; body: string }[];
+let delegationError: string | null;
 
 function mockFetch(tokens: Record<string, Record<string, unknown>>) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
     const url = new URL(req.url);
-    if (url.hostname === 'oauth2.googleapis.com') {
+    if (url.hostname === 'oauth2.googleapis.com' && url.pathname === '/tokeninfo') {
       const info = tokens[url.searchParams.get('access_token') || ''];
       return info ? Response.json(info) : Response.json({ error_description: 'Invalid Value' }, { status: 400 });
+    }
+    if (url.hostname === 'oauth2.googleapis.com' && url.pathname === '/token') {
+      const assertion = new URLSearchParams(await req.text()).get('assertion') || '';
+      const claims = JSON.parse(atob(assertion.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (delegationError) return Response.json({ error: delegationError }, { status: 401 });
+      return Response.json({ access_token: 'dwd:' + claims.sub, expires_in: 3600 });
+    }
+    if (url.hostname === 'gmail.googleapis.com') {
+      gmailCalls.push({ url: url.pathname + url.search, method: req.method, auth: req.headers.get('Authorization'), body: req.method === 'GET' ? '' : await req.text() });
+      return Response.json({ ok: true });
     }
     if (url.hostname === 'api.anthropic.com') {
       anthropicCalls.push({ headers: req.headers, body: await req.json() });
@@ -67,12 +80,24 @@ function message(json: unknown, stop = 'end_turn') {
 
 const thread = { id: 't1', subject: 'Seed round', labels: [], messages: [{ from: 'Maya Chen', email: 'maya@n.example', to: 'Julian', time: 'Today 09:42', text: 'Can we talk Tuesday?', attachments: [] }] };
 
+let serviceAccountJson: string;
+beforeAll(async () => {
+  const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+  const der = new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey) as ArrayBuffer);
+  const pem = '-----BEGIN PRIVATE KEY-----\n' + btoa(String.fromCharCode(...der)).replace(/(.{64})/g, '$1\n') + '\n-----END PRIVATE KEY-----\n';
+  serviceAccountJson = JSON.stringify({ client_email: 'mail@axal.iam.gserviceaccount.com', private_key: pem });
+});
+
 beforeEach(() => {
   clearAuthCache();
+  clearDelegationCache();
   anthropicCalls = [];
+  gmailCalls = [];
+  delegationError = null;
   env = {
-    ASSETS: { fetch: vi.fn(async () => new Response('<!doctype html>app')) } as unknown as Fetcher,
-    DB: fakeD1(), GOOGLE_CLIENT_ID: 'client-1', ALLOWED_DOMAINS: 'axal.vc', ORG_DOMAIN: 'axal.vc', ANTHROPIC_API_KEY: 'sk-test'
+    ASSETS: { fetch: vi.fn(async () => new Response('<!doctype html>app', { headers: { 'Content-Type': 'text/html' } })) } as unknown as Fetcher,
+    DB: fakeD1(), GOOGLE_CLIENT_ID: 'client-1', ALLOWED_DOMAINS: 'axal.vc', ORG_DOMAIN: 'axal.vc', ANTHROPIC_API_KEY: 'sk-test',
+    SUPER_ADMINS: 'boss@axal.vc'
   };
   mockFetch({
     good,
@@ -80,6 +105,9 @@ beforeEach(() => {
     outsider: { ...good, email: 'eve@evil.example' },
     personal: { ...good, email: 'julian.park@gmail.com' },
     priya: { ...good, email: 'priya@axal.vc' },
+    boss: { ...good, email: 'boss@axal.vc' },
+    ada: { ...good, email: 'ada@axal.vc' },
+    built: { ...good, aud: 'built-1' },
     unverified: { ...good, email_verified: 'false' }
   });
 });
@@ -97,6 +125,20 @@ describe('routing', () => {
     expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true });
     env.ANTHROPIC_API_KEY = undefined;
     expect((await (await call('/api/config')).json() as { assistant: boolean }).assistant).toBe(false);
+  });
+
+  it('falls back to the client ID captured at build time', async () => {
+    env.GOOGLE_CLIENT_ID = undefined;
+    env.ASSETS = { fetch: vi.fn(async () => Response.json({ googleClientId: 'built-1' })) } as unknown as Fetcher;
+    expect(await (await call('/api/config')).json()).toMatchObject({ googleClientId: 'built-1' });
+    expect((await call('/api/session', { token: 'built' })).status).toBe(200);
+    expect((await call('/api/session', { token: 'good' })).status).toBe(401);
+  });
+
+  it('has no client ID when neither the Worker nor the build sets one', async () => {
+    env.GOOGLE_CLIENT_ID = undefined;
+    expect(await (await call('/api/config')).json()).toMatchObject({ googleClientId: '' });
+    expect((await call('/api/session', { token: 'good' })).status).toBe(401);
   });
 
   it('404s unknown API routes after auth', async () => {
@@ -121,8 +163,8 @@ describe('auth', () => {
     db.exec(`INSERT INTO members (email, name, status, created_at) VALUES ('julian@axal.vc', 'Julian Park', 'active', 0), ('priya@axal.vc', 'Priya Natarajan', 'suspended', 0);
              INSERT INTO linked_accounts (google_email, member_email, created_at) VALUES ('julian.park@gmail.com', 'julian@axal.vc', 0);`);
     clearAuthCache();
-    expect(await (await call('/api/session', { token: 'personal' })).json()).toEqual({ user: { email: 'julian.park@gmail.com', memberEmail: 'julian@axal.vc', name: 'Julian Park' } });
-    expect(await (await call('/api/session', { token: 'good' })).json()).toEqual({ user: { email: 'julian@axal.vc', memberEmail: 'julian@axal.vc', name: 'Julian Park' } });
+    expect(await (await call('/api/session', { token: 'personal' })).json()).toEqual({ user: { email: 'julian.park@gmail.com', memberEmail: 'julian@axal.vc', name: 'Julian Park', role: 'member' } });
+    expect(await (await call('/api/session', { token: 'good' })).json()).toEqual({ user: { email: 'julian@axal.vc', memberEmail: 'julian@axal.vc', name: 'Julian Park', role: 'member' } });
     const sus = await call('/api/session', { token: 'priya' });
     expect(sus.status).toBe(403);
     expect(await sus.json()).toMatchObject({ code: 'suspended' });
@@ -193,5 +235,106 @@ describe('assistant', () => {
     expect((await call('/api/assistant/rewrite', { method: 'POST', token: 'good', body: JSON.stringify({ text: 'x', mode: 'pirate' }) })).status).toBe(400);
     env.ANTHROPIC_API_KEY = undefined;
     expect((await call('/api/assistant/insight', { method: 'POST', token: 'good', body: JSON.stringify({ thread }) })).status).toBe(503);
+  });
+});
+
+const post = (path: string, token: string, body: unknown) => call(path, { method: 'POST', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+
+describe('members administration', () => {
+  it('makes SUPER_ADMINS super admins who cannot be suspended', async () => {
+    expect(await (await call('/api/session', { token: 'boss' })).json()).toMatchObject({ user: { role: 'super_admin' } });
+    (env.DB as unknown as { exec: (s: string) => void }).exec(`INSERT INTO members (email, name, status, created_at) VALUES ('boss@axal.vc', '', 'suspended', 0)`);
+    clearAuthCache();
+    expect((await call('/api/session', { token: 'boss' })).status).toBe(200);
+  });
+
+  it('keeps members out', async () => {
+    expect((await call('/api/admin/members', { token: 'good' })).status).toBe(403);
+    expect((await call('/api/admin/mailboxes', { token: 'good' })).status).toBe(403);
+  });
+
+  it('lets the super admin grant admin, and admins manage members but not roles', async () => {
+    const list = await (await call('/api/admin/members', { token: 'boss' })).json() as { members: { email: string; role: string }[] };
+    expect(list.members).toEqual([expect.objectContaining({ email: 'boss@axal.vc', role: 'super_admin' })]);
+
+    expect(await (await post('/api/admin/members', 'boss', { email: 'Ada@axal.vc', name: 'Ada Lovelace', role: 'admin' })).json())
+      .toMatchObject({ member: { email: 'ada@axal.vc', role: 'admin', status: 'active' } });
+    clearAuthCache();
+    expect(await (await call('/api/session', { token: 'ada' })).json()).toMatchObject({ user: { role: 'admin', name: 'Ada Lovelace' } });
+
+    // Admin: adds and suspends members, links accounts...
+    expect((await post('/api/admin/members', 'ada', { email: 'julian@axal.vc', name: 'Julian Park' })).status).toBe(200);
+    expect((await post('/api/admin/links', 'ada', { googleEmail: 'julian.park@gmail.com', memberEmail: 'julian@axal.vc' })).status).toBe(200);
+    expect(await (await call('/api/session', { token: 'personal' })).json()).toMatchObject({ user: { memberEmail: 'julian@axal.vc' } });
+    expect((await post('/api/admin/members', 'ada', { email: 'julian@axal.vc', status: 'suspended' })).status).toBe(200);
+    expect(await (await call('/api/session', { token: 'personal' })).json()).toMatchObject({ code: 'suspended' });
+
+    // ...but can't grant roles, touch the super admin, or change themselves.
+    expect((await post('/api/admin/members', 'ada', { email: 'julian@axal.vc', role: 'admin' })).status).toBe(403);
+    expect((await post('/api/admin/members', 'ada', { email: 'boss@axal.vc', status: 'suspended' })).status).toBe(403);
+    expect((await post('/api/admin/members', 'ada', { email: 'ada@axal.vc', role: 'member' })).status).toBe(403);
+    expect((await post('/api/admin/members', 'boss', { email: 'boss@axal.vc', role: 'member' })).status).toBe(403);
+    expect((await call('/api/admin/mailboxes', { token: 'ada' })).status).toBe(403);
+  });
+
+  it('validates members and links', async () => {
+    expect((await post('/api/admin/members', 'boss', { email: 'someone@gmail.com' })).status).toBe(400);
+    expect((await post('/api/admin/links', 'boss', { googleEmail: 'julian@axal.vc', memberEmail: 'julian@axal.vc' })).status).toBe(400);
+    expect((await post('/api/admin/members', 'boss', { email: 'x@axal.vc', role: 'owner' })).status).toBe(400);
+  });
+
+  it('unlinks accounts', async () => {
+    await post('/api/admin/links', 'boss', { googleEmail: 'julian.park@gmail.com', memberEmail: 'julian@axal.vc' });
+    expect((await call('/api/admin/links?googleEmail=julian.park%40gmail.com', { method: 'DELETE', token: 'boss', headers: { Origin: ORIGIN } })).status).toBe(200);
+    expect(await (await call('/api/session', { token: 'personal' })).json()).toMatchObject({ code: 'not_linked' });
+  });
+});
+
+describe('shared mailboxes', () => {
+  it('reports when delegation is not set up', async () => {
+    expect(await (await call('/api/mailboxes', { token: 'good' })).json()).toEqual({ enabled: false, mailboxes: [] });
+    expect((await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' })).status).toBe(503);
+  });
+
+  it('opens a granted mailbox through the proxy with a delegated token', async () => {
+    env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
+    const g = await post('/api/admin/mailboxes', 'boss', { mailbox: 'Deals@axal.vc', memberEmail: 'julian@axal.vc' });
+    expect(await g.json()).toEqual({ enabled: true, mailboxes: [{ mailbox: 'deals@axal.vc', members: ['julian@axal.vc'] }] });
+    expect(gmailCalls[0]).toMatchObject({ url: '/gmail/v1/users/me/profile', auth: 'Bearer dwd:deals@axal.vc' });
+
+    expect(await (await call('/api/mailboxes', { token: 'good' })).json()).toEqual({ enabled: true, mailboxes: ['deals@axal.vc'] });
+    expect(await (await call('/api/mailboxes', { token: 'priya' })).json()).toEqual({ enabled: true, mailboxes: [] });
+
+    const list = await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/threads?labelIds=INBOX', { token: 'good' });
+    expect(list.status).toBe(200);
+    expect(gmailCalls.at(-1)).toMatchObject({ url: '/gmail/v1/users/me/threads?labelIds=INBOX', method: 'GET', auth: 'Bearer dwd:deals@axal.vc' });
+
+    const send = await call('/api/mailboxes/deals%40axal.vc/upload/gmail/v1/users/me/messages/send?uploadType=multipart',
+      { method: 'POST', token: 'good', headers: { Origin: ORIGIN, 'Content-Type': 'multipart/related; boundary=b' }, body: '--b--' });
+    expect(send.status).toBe(200);
+    expect(gmailCalls.at(-1)).toMatchObject({ url: '/upload/gmail/v1/users/me/messages/send?uploadType=multipart', method: 'POST', body: '--b--' });
+  });
+
+  it('refuses members without access and operations outside the mail client', async () => {
+    env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
+    await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' });
+    const n = gmailCalls.length;
+    expect((await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/threads', { token: 'priya' })).status).toBe(403);
+    expect((await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/settings/forwardingAddresses', { token: 'good' })).status).toBe(403);
+    expect((await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/messages/abc', { method: 'DELETE', token: 'good', headers: { Origin: ORIGIN } })).status).toBe(403);
+    expect((await call('/api/mailboxes/ceo%40axal.vc/gmail/v1/users/me/threads', { token: 'good' })).status).toBe(403);
+    expect((await call('/api/mailboxes/x%40gmail.com/gmail/v1/users/me/threads', { token: 'good' })).status).toBe(400);
+    expect(gmailCalls.length).toBe(n);
+
+    await call('/api/admin/mailboxes?mailbox=deals%40axal.vc&memberEmail=julian%40axal.vc', { method: 'DELETE', token: 'boss', headers: { Origin: ORIGIN } });
+    expect((await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/threads', { token: 'good' })).status).toBe(403);
+  });
+
+  it('explains a missing domain-wide delegation grant', async () => {
+    env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
+    delegationError = 'unauthorized_client';
+    const r = await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' });
+    expect(r.status).toBe(502);
+    expect((await r.json() as { error: string }).error).toContain('Domain-wide delegation');
   });
 });

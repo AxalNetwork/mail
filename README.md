@@ -48,7 +48,7 @@ Still needed, once:
 
 4. Push to the default branch. `.github/workflows/deploy.yml` tests everything, applies migrations, deploys the Worker with the frontend, sets the Anthropic key, and checks `https://mail.axal.vc/api/health`.
 
-**Deploying from Cloudflare instead of GitHub Actions:** connecting the repository under Workers & Pages → mail → Settings → Build works as is: `wrangler deploy` runs the frontend build itself (`build.command` in `wrangler.jsonc`), and no API token is needed. Use one pipeline or the other; if you use Cloudflare's, delete the `CLOUDFLARE_API_TOKEN` secret so GitHub doesn't deploy too. Set `GOOGLE_CLIENT_ID` under the Worker's Settings → Variables and Secrets; deploys keep it (`keep_vars`). Cloudflare's build doesn't apply D1 migrations; run `npm run db:migrate` when a new one is added.
+**Deploying from Cloudflare instead of GitHub Actions:** connecting the repository under Workers & Pages → mail → Settings → Build works as is: `wrangler deploy` runs the frontend build itself (`build.command` in `wrangler.jsonc`), and no API token is needed. Use one pipeline or the other; if you use Cloudflare's, delete the `CLOUDFLARE_API_TOKEN` secret so GitHub doesn't deploy too. Set `GOOGLE_CLIENT_ID` either under the Worker's Settings → Variables and secrets (deploys keep it, `keep_vars`) or under Settings → Build → Variables and secrets. A build variable is captured into `dist/build-config.json` and the Worker falls back to it, so it applies from the next build. Cloudflare's build doesn't apply D1 migrations; run `npm run db:migrate` when a new one is added.
 
 The Worker is named `mail` (`wrangler.jsonc`), so the deploy replaces a `mail` Worker created in the dashboard.
 
@@ -63,7 +63,9 @@ Configuration lives in the Worker, not in the build: the frontend reads `/api/co
 | `GOOGLE_CLIENT_ID` | var (`--var` at deploy, or `wrangler.jsonc`) | OAuth client the API accepts tokens for |
 | `ALLOWED_DOMAINS` | var, default `axal.vc` | Email domains whose verified accounts are members |
 | `ORG_DOMAIN` | var, default `axal.vc` | Domain the composer treats as internal |
+| `SUPER_ADMINS` | var, `guillaume.lauzier@axal.vc` | Members with full rights in *Members & access*. They can't be suspended or demoted from the app. |
 | `ANTHROPIC_API_KEY` | secret | Assistant; without it the assistant endpoints answer 503 and the UI falls back to templates |
+| `GOOGLE_SERVICE_ACCOUNT` | secret | Service account key (JSON) with domain-wide delegation; enables shared mailboxes |
 
 ## Google OAuth client
 
@@ -89,7 +91,33 @@ The login screen follows the design:
   - any other address must be in `linked_accounts`; otherwise the screen shows *This Google account isn't linked to Axal VC*.
 - A session lasts at most **12 hours**; then the login screen asks the user to sign in again. Google access tokens (about one hour) are refreshed silently in between. The token is kept in `sessionStorage`; only the last address and the session start time go in `localStorage`.
 
-Members and linked accounts are rows in D1; add them with the Cloudflare dashboard (D1 → axal-mail → Console) or `wrangler d1 execute axal-mail --remote --command "…"`:
+## Roles, members and mailboxes
+
+Every person opens **their own Gmail mailbox** when they sign in. Administration → **Members & access** (visible to admins) manages the rest:
+
+| Role | Can |
+| --- | --- |
+| Member | Use their own mailbox, and any shared mailbox they were given |
+| Admin | Add and rename members, suspend and restore members, link personal Google accounts |
+| Super admin (`SUPER_ADMINS`) | Everything an admin can, plus grant or revoke admin, suspend admins, and decide who opens which shared mailbox |
+
+Nobody changes their own role or status from the app.
+
+### Shared mailboxes (deals@, ir@…)
+
+A super admin can give members access to another Workspace mailbox; it then appears in the **Mailbox** menu at the top. The Worker reads it with Google Workspace **domain-wide delegation**; the browser never gets that mailbox's credentials, and the Worker only lets through what the mail client does (read, label, archive, trash, drafts, send), not deletes, filters, forwarding or settings.
+
+Set it up once:
+
+1. Google Cloud console, same project as the OAuth client: **IAM & Admin → Service accounts → Create service account** (no roles needed). Open it → **Keys → Add key → JSON**, and download the file.
+2. Copy the service account's **Unique ID** (a long number, on its Details tab).
+3. Admin console (super admin): **Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new**. Client ID: that Unique ID. OAuth scopes: `https://www.googleapis.com/auth/gmail.modify`.
+4. Cloudflare: Workers & Pages → mail → Settings → Variables and secrets → **Add → Secret** `GOOGLE_SERVICE_ACCOUNT`, with the whole JSON file as the value. Deploy.
+5. In Axal VC Mail, **Members & access → Shared mailboxes**: enter the mailbox and a member, then **Give access**. The Worker checks with Google that it can open the mailbox before saving.
+
+The key can open any mailbox on the domain, so keep it only in the Worker secret, and rotate it (new key, update the secret, delete the old key) if it might have leaked.
+
+Members and linked accounts can also be edited directly in D1 (Cloudflare dashboard → D1 → axal-mail → Console) or with `wrangler d1 execute axal-mail --remote --command "…"`:
 
 ```sql
 -- Optional for @axal.vc staff (needed only to set a display name or suspend someone)
@@ -116,6 +144,10 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/assistant/draft` | Draft from an instruction and/or the thread |
 | `POST /api/assistant/rewrite` | `shorter`, `formal`, `warmer`, `clarity`, `translate` (French) |
 | `POST /api/assistant/persona` | Bulk email subject and body for one persona, with merge tokens |
+| `GET /api/mailboxes` | Shared mailboxes this member may open |
+| `/api/mailboxes/<mailbox>/(upload/)gmail/v1/users/me/…` | Gmail API for a shared mailbox, limited to what the mail client uses |
+| `GET/POST /api/admin/members` · `POST/DELETE /api/admin/links` | Members, roles, status and linked accounts (admins) |
+| `GET/POST/DELETE /api/admin/mailboxes` | Who opens which shared mailbox (super admins) |
 
 The assistant uses Claude Opus 5.5 through the Anthropic SDK, with JSON-schema structured outputs and server-side refusal fallback (`fallbacks: "default"`). The system prompt treats email content as untrusted data (it never follows instructions found in messages), forbids inventing facts, and keeps investment or fund-term commitments out of drafts. The model returns plain-text paragraphs and the Worker builds the HTML, escaped, so nothing it writes can inject markup into the composer.
 
@@ -134,7 +166,8 @@ The assistant uses Claude Opus 5.5 through the Anthropic SDK, with JSON-schema s
 | Bulk email | One message per recipient, about 30 per minute. Investor and LP personas are saved to Drafts for partner approval. |
 | Signature | From your Google profile, with missing fields editable under *Administration*. **Install in Gmail** writes it to Gmail's signature setting. |
 | HTML mail | Sandboxed iframe (no scripts); remote images blocked until *Show images* |
-| Mailbox switcher, document library, delegated mailboxes | Demo only. Delegated access needs Workspace domain-wide delegation. |
+| Mailbox switcher | Your own mailbox plus the shared mailboxes a super admin gave you (see *Shared mailboxes*) |
+| Document library | Demo only |
 
 Security headers for the frontend (CSP limited to Google's endpoints, HSTS, no framing) are in `public/_headers`.
 
@@ -157,7 +190,11 @@ src/                      Frontend
   styles/app.css          Design tokens and component styles
 worker/                   Backend (Cloudflare Worker)
   src/index.ts            Router; non-/api paths are served from dist/ by Cloudflare
-  src/auth.ts             Google token verification and member resolution
+  src/auth.ts             Google token verification, member and role resolution
+  src/admin.ts            Members, roles and linked accounts
+  src/mailboxes.ts        Shared mailbox access and the Gmail proxy
+  src/delegation.ts       Domain-wide delegation tokens (service account JWT)
+  src/config.ts           OAuth client ID (Worker variable or build-time fallback)
   src/assistant.ts        Claude calls and prompts
   src/notes.ts            D1 notes
   migrations/             D1 schema

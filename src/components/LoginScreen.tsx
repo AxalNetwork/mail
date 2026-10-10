@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SignInOptions } from '../providers/gmail/auth';
+import type { Role } from '../admin/api';
 
 export type LoginReason = 'signed-out' | 'expired' | 'lost';
 
 export interface SignedIn {
   name: string;
   email: string;
+  role?: Role;
 }
 
 /** A sign-in failure with the short title the design shows above the message. */

@@ -2,12 +2,12 @@ import type { FolderCounts } from '../providers/types';
 
 export type View =
   | 'inbox' | 'starred' | 'snoozed' | 'sent' | 'drafts' | 'scheduled' | 'all' | 'search'
-  | 'bulk' | 'admin'
+  | 'bulk' | 'admin' | 'members'
   | 'shared' | 'internal' | 'contacts' | 'documents' | 'automations' | 'tasks' | 'analytics';
 
 export const VIEW_TITLES: Record<View, string> = {
   inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', all: 'All Mail',
-  search: 'Search', bulk: 'Bulk email', admin: 'Administration', shared: 'Shared Inboxes', internal: 'Internal',
+  search: 'Search', bulk: 'Bulk email', admin: 'Administration', members: 'Members & access', shared: 'Shared Inboxes', internal: 'Internal',
   contacts: 'Contacts & Relationships', documents: 'Documents', automations: 'AI Automations', tasks: 'Tasks & Approvals', analytics: 'Analytics'
 };
 
@@ -55,6 +55,7 @@ export function Sidebar({ view, counts, open, hide, footer, onGo, onCompose }: P
       <div className="nav-group">
         <span className="mono-label">Organization</span>
         {item('admin')}
+        {item('members')}
       </div>
       <div className="sidebar-foot">
         <a href="https://axal.vc" target="_blank" rel="noreferrer">Open axal.vc ↗</a>

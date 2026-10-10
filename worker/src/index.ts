@@ -3,6 +3,9 @@ import { allowedDomains, authenticate } from './auth';
 import { HttpError, errorResponse, json, readJson } from './http';
 import { addNote, listNotes } from './notes';
 import * as assistant from './assistant';
+import * as admin from './admin';
+import * as mailboxes from './mailboxes';
+import { googleClientId } from './config';
 
 export type { Env };
 
@@ -34,7 +37,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/config' && method === 'GET') {
     return json(
       {
-        googleClientId: env.GOOGLE_CLIENT_ID || '',
+        googleClientId: await googleClientId(env),
         orgDomain: env.ORG_DOMAIN || allowedDomains(env)[0] || '',
         assistant: !!env.ANTHROPIC_API_KEY,
         notes: !!env.DB,
@@ -60,6 +63,11 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === 'GET') return json({ notes: await listNotes(env.DB, url.searchParams.get('key')) });
     if (method === 'POST') return json({ note: await addNote(env.DB, user, await readJson(req)) }, 201);
   }
+
+  if (path === '/api/mailboxes' && method === 'GET') return mailboxes.listForUser(env, user);
+  if (path.startsWith('/api/mailboxes/')) return mailboxes.proxy(req, env, user, url);
+  if (path === '/api/admin/mailboxes') return mailboxes.adminRoute(req, env, user, url);
+  if (path.startsWith('/api/admin/')) return admin.route(req, env, user, url);
 
   if (method === 'POST' && path.startsWith('/api/assistant/')) {
     const action = path.slice('/api/assistant/'.length);

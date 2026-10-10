@@ -13,8 +13,7 @@ import { textToHtml } from '../../lib/html';
 import { extractBody } from '../../lib/outgoing';
 import { LocalNotes, type NotesStore } from './notes';
 
-const API = 'https://gmail.googleapis.com/gmail/v1/users/me';
-const UPLOAD = 'https://gmail.googleapis.com/upload/gmail/v1/users/me';
+const GMAIL = 'https://gmail.googleapis.com/';
 const PEOPLE = 'https://people.googleapis.com/v1';
 const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const PAGE_SIZE = 25;
@@ -54,7 +53,21 @@ function writeJson(key: string, v: unknown) {
   try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* storage full or blocked */ }
 }
 
-/** Gmail + Google People API, called directly from the browser with the user's OAuth token. */
+export interface GmailOptions {
+  /** Open this shared mailbox (through the backend's delegation proxy) instead of the user's own. */
+  mailbox?: string;
+  /** Base URL of that proxy, e.g. https://mail.axal.vc/api/mailboxes. */
+  proxyBase?: string;
+  /** Shared mailboxes the user may switch to. */
+  sharedMailboxes?: () => Promise<string[]>;
+}
+
+/**
+ * Gmail + Google People API, called directly from the browser with the user's
+ * OAuth token. A shared mailbox goes through the backend instead, which checks
+ * access and calls Gmail with a delegated token; the person (profile,
+ * contacts, signature details) is still the signed-in user.
+ */
 export class GmailProvider implements MailProvider {
   readonly kind = 'gmail' as const;
   readonly capabilities: Capabilities = {
@@ -70,11 +83,21 @@ export class GmailProvider implements MailProvider {
   private labelsLoaded: Promise<void> | null = null;
   private sendAsCache: SendAs[] | null = null;
   private contactsWarm = false;
+  private gmail: string;
+  private uploads: string;
+  /** The shared mailbox being shown, or undefined for the user's own. */
+  readonly mailbox?: string;
 
-  constructor(readonly auth: GoogleAuth, orgDomainOverride = '', private notes: NotesStore = new LocalNotes()) {
+  constructor(readonly auth: GoogleAuth, orgDomainOverride = '', private notes: NotesStore = new LocalNotes(), private opts: GmailOptions = {}) {
     this.api = new GoogleClient(auth);
     this.orgDomain = orgDomainOverride;
     this.capabilities.sharedNotes = notes.shared;
+    const root = opts.mailbox && opts.proxyBase ? opts.proxyBase.replace(/\/$/, '') + '/' + encodeURIComponent(opts.mailbox) + '/' : GMAIL;
+    this.mailbox = opts.mailbox && opts.proxyBase ? opts.mailbox : undefined;
+    this.gmail = root + 'gmail/v1/users/me';
+    this.uploads = root + 'upload/gmail/v1/users/me';
+    // The shared mailbox's own signature is managed by its owner in Gmail.
+    if (this.mailbox) this.capabilities.installSignature = false;
   }
 
   // ---------- account & settings ----------
@@ -127,12 +150,16 @@ export class GmailProvider implements MailProvider {
 
   async mailboxes() {
     const a = await this.account();
-    return [{ addr: a.email, access: 'Owner' }];
+    let shared: string[] = [];
+    try { shared = (await this.opts.sharedMailboxes?.()) || []; } catch { /* backend unreachable: own mailbox only */ }
+    if (this.mailbox && !shared.includes(this.mailbox)) shared = [this.mailbox, ...shared];
+    this.capabilities.mailboxSwitch = shared.length > 0;
+    return [{ addr: a.email, access: 'Your mailbox' }, ...shared.map(addr => ({ addr, access: 'Shared' }))];
   }
 
   private async sendAs(): Promise<SendAs[]> {
     if (!this.sendAsCache) {
-      const r = await this.api.request<{ sendAs?: SendAs[] }>(API + '/settings/sendAs');
+      const r = await this.api.request<{ sendAs?: SendAs[] }>(this.gmail + '/settings/sendAs');
       this.sendAsCache = (r.sendAs || []).filter(s => s.isPrimary || s.verificationStatus === 'accepted');
     }
     return this.sendAsCache;
@@ -142,25 +169,25 @@ export class GmailProvider implements MailProvider {
     const a = await this.account();
     let list: SendAs[] = [];
     try { list = await this.sendAs(); } catch { /* settings scope missing: primary only */ }
-    if (!list.length) list = [{ sendAsEmail: a.email, displayName: a.name, isPrimary: true, isDefault: true }];
+    if (!list.length) list = [{ sendAsEmail: this.mailbox || a.email, displayName: this.mailbox ? '' : a.name, isPrimary: true, isDefault: true }];
     const ids = list.map<Identity>(s => ({
       id: s.sendAsEmail,
       addr: s.sendAsEmail,
       name: s.displayName || a.name,
-      kind: s.isPrimary ? 'Your mailbox' : 'Send-as address · configured in Gmail',
+      kind: s.isPrimary ? (this.mailbox ? 'Shared mailbox' : 'Your mailbox') : 'Send-as address · configured in Gmail',
       short: s.isPrimary ? 'Personal' : 'Alias',
       note: s.isPrimary ? '' : 'Recipients see "' + (s.displayName || s.sendAsEmail) + '" <' + s.sendAsEmail + '>.',
       isDefault: !!s.isDefault
     }));
     // Primary first, so it is the composer's default.
-    return ids.sort((x, y) => Number(y.kind === 'Your mailbox') - Number(x.kind === 'Your mailbox'));
+    return ids.sort((x, y) => Number(y.kind !== 'Send-as address · configured in Gmail') - Number(x.kind !== 'Send-as address · configured in Gmail'));
   }
 
   async installSignature(html: string) {
     const list = await this.sendAs();
     const primary = list.find(s => s.isPrimary) || list[0];
     if (!primary) throw new Error('No send-as address found');
-    await this.api.request(API + '/settings/sendAs/' + encodeURIComponent(primary.sendAsEmail), {
+    await this.api.request(this.gmail + '/settings/sendAs/' + encodeURIComponent(primary.sendAsEmail), {
       method: 'PATCH', json: { signature: html }
     });
   }
@@ -173,7 +200,7 @@ export class GmailProvider implements MailProvider {
 
   private loadLabels(): Promise<void> {
     if (!this.labelsLoaded) {
-      this.labelsLoaded = this.api.request<{ labels?: GmailLabel[] }>(API + '/labels').then(r => {
+      this.labelsLoaded = this.api.request<{ labels?: GmailLabel[] }>(this.gmail + '/labels').then(r => {
         this.labelNames.clear();
         for (const l of r.labels || []) if (l.type === 'user') this.labelNames.set(l.id, l.name);
       }).catch(e => { this.labelsLoaded = null; throw e; });
@@ -192,7 +219,7 @@ export class GmailProvider implements MailProvider {
   }
 
   async counts(): Promise<FolderCounts> {
-    const get = (id: string) => this.api.request<GmailLabel>(API + '/labels/' + id).catch(() => ({} as GmailLabel));
+    const get = (id: string) => this.api.request<GmailLabel>(this.gmail + '/labels/' + id).catch(() => ({} as GmailLabel));
     const [inbox, drafts] = await Promise.all([get('INBOX'), get('DRAFT')]);
     return { inbox: inbox.threadsUnread || 0, drafts: drafts.messagesTotal || 0, sent: 0, snoozed: 0, scheduled: 0 };
   }
@@ -216,9 +243,9 @@ export class GmailProvider implements MailProvider {
       case 'search': query.q = q.query; break;
       case 'all': break;
     }
-    const r = await this.api.request<{ threads?: { id: string }[]; nextPageToken?: string }>(API + '/threads', { query });
+    const r = await this.api.request<{ threads?: { id: string }[]; nextPageToken?: string }>(this.gmail + '/threads', { query });
     const threads = await mapLimit(r.threads || [], 8, t =>
-      this.api.request<GmailThread>(API + '/threads/' + t.id, { query: { format: 'metadata', metadataHeaders: METADATA_HEADERS } }));
+      this.api.request<GmailThread>(this.gmail + '/threads/' + t.id, { query: { format: 'metadata', metadataHeaders: METADATA_HEADERS } }));
     const now = new Date();
     return {
       threads: threads.map(t => toSummary(t, { me: a.email, labelNames: this.labelNames, now })),
@@ -228,12 +255,12 @@ export class GmailProvider implements MailProvider {
 
   private async listDrafts(pageToken?: string): Promise<ListPage> {
     const a = await this.account();
-    const r = await this.api.request<{ drafts?: { id: string; message: { id: string } }[]; nextPageToken?: string }>(API + '/drafts', {
+    const r = await this.api.request<{ drafts?: { id: string; message: { id: string } }[]; nextPageToken?: string }>(this.gmail + '/drafts', {
       query: { maxResults: PAGE_SIZE, pageToken }
     });
     const now = new Date();
     const threads = await mapLimit(r.drafts || [], 8, async d => {
-      const m = await this.api.request<GmailMessage>(API + '/messages/' + d.message.id, { query: { format: 'metadata', metadataHeaders: METADATA_HEADERS } });
+      const m = await this.api.request<GmailMessage>(this.gmail + '/messages/' + d.message.id, { query: { format: 'metadata', metadataHeaders: METADATA_HEADERS } });
       const s = toSummary({ id: m.threadId, messages: [m] }, { me: a.email, labelNames: this.labelNames, now });
       return { ...s, id: 'draft:' + d.id, draftId: d.id, org: 'Draft', labels: ['Draft', ...s.labels] } satisfies ThreadSummary;
     });
@@ -243,7 +270,7 @@ export class GmailProvider implements MailProvider {
   async getThread(id: string): Promise<Thread> {
     const a = await this.account();
     await this.loadLabels();
-    const t = await this.api.request<GmailThread>(API + '/threads/' + id, { query: { format: 'full' } });
+    const t = await this.api.request<GmailThread>(this.gmail + '/threads/' + id, { query: { format: 'full' } });
     const now = new Date();
     const s = toSummary(t, { me: a.email, labelNames: this.labelNames, now });
     const messages = (t.messages || []).filter(m => !(m.labelIds || []).includes('DRAFT')).map(m => toMessage(m, now));
@@ -261,13 +288,13 @@ export class GmailProvider implements MailProvider {
   }
 
   private modify(id: string, add: string[], remove: string[]) {
-    return this.api.request<void>(API + '/threads/' + id + '/modify', { json: { addLabelIds: add, removeLabelIds: remove } });
+    return this.api.request<void>(this.gmail + '/threads/' + id + '/modify', { json: { addLabelIds: add, removeLabelIds: remove } });
   }
 
   async markRead(id: string, read: boolean) { await (read ? this.modify(id, [], ['UNREAD']) : this.modify(id, ['UNREAD'], [])); }
   async setStarred(id: string, starred: boolean) { await (starred ? this.modify(id, ['STARRED'], []) : this.modify(id, [], ['STARRED'])); }
   async archive(id: string) { await this.modify(id, [], ['INBOX']); }
-  async trash(id: string) { await this.api.request(API + '/threads/' + id + '/trash', { method: 'POST' }); }
+  async trash(id: string) { await this.api.request(this.gmail + '/threads/' + id + '/trash', { method: 'POST' }); }
   async snooze(): Promise<string> { throw new Error('Snooze is not available through the Gmail API.'); }
 
   // ---------- contacts ----------
@@ -323,7 +350,7 @@ export class GmailProvider implements MailProvider {
   // ---------- sending & drafts ----------
 
   async downloadAttachment(messageId: string, attachmentId: string, mime: string): Promise<Blob> {
-    const r = await this.api.request<{ data: string }>(API + '/messages/' + messageId + '/attachments/' + attachmentId);
+    const r = await this.api.request<{ data: string }>(this.gmail + '/messages/' + messageId + '/attachments/' + attachmentId);
     return new Blob([base64ToBytes(r.data) as BlobPart], { type: mime });
   }
 
@@ -350,14 +377,14 @@ export class GmailProvider implements MailProvider {
     const body =
       '--' + b + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) + '\r\n' +
       '--' + b + '\r\nContent-Type: message/rfc822\r\n\r\n' + raw + '\r\n--' + b + '--';
-    return this.api.request<T>(UPLOAD + path, {
+    return this.api.request<T>(this.uploads + path, {
       method, query: { uploadType: 'multipart' }, body, headers: { 'Content-Type': 'multipart/related; boundary=' + b }
     });
   }
 
   /** The Message-ID Gmail assigned to a message we just sent. */
   private async messageIdOf(id: string): Promise<string | undefined> {
-    const m = await this.api.request<GmailMessage>(API + '/messages/' + id, { query: { format: 'metadata', metadataHeaders: ['Message-ID'] } });
+    const m = await this.api.request<GmailMessage>(this.gmail + '/messages/' + id, { query: { format: 'metadata', metadataHeaders: ['Message-ID'] } });
     return header(m, 'Message-ID') || undefined;
   }
 
@@ -383,7 +410,7 @@ export class GmailProvider implements MailProvider {
     if (msg.draftId) {
       // Update the stored draft, then send it, so Gmail doesn't keep a stale copy.
       await this.saveDraft(msg);
-      r = await this.api.request(API + '/drafts/send', { json: { id: msg.draftId } });
+      r = await this.api.request(this.gmail + '/drafts/send', { json: { id: msg.draftId } });
     } else {
       r = await this.upload(
         '/messages/send', 'POST', msg.reply ? { threadId: msg.reply.threadId } : {}, await this.raw(msg));
@@ -394,7 +421,7 @@ export class GmailProvider implements MailProvider {
   }
 
   async getDraft(draftId: string): Promise<DraftContent> {
-    const d = await this.api.request<{ id: string; message: GmailMessage }>(API + '/drafts/' + draftId, { query: { format: 'full' } });
+    const d = await this.api.request<{ id: string; message: GmailMessage }>(this.gmail + '/drafts/' + draftId, { query: { format: 'full' } });
     const m = d.message;
     const b = messageBodies(m);
     const attachments = await Promise.all(b.attachments.filter(a => a.attachmentId).map(async (a, i): Promise<ComposeAttachment> => ({
@@ -421,7 +448,7 @@ export class GmailProvider implements MailProvider {
   }
 
   async deleteDraft(draftId: string) {
-    await this.api.request(API + '/drafts/' + draftId, { method: 'DELETE' });
+    await this.api.request(this.gmail + '/drafts/' + draftId, { method: 'DELETE' });
   }
 
   signOut() {

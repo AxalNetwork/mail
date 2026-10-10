@@ -13,7 +13,8 @@ import { DemoAssistant } from './assistant/demo';
 import { HttpAssistant } from './assistant/http';
 import { OfflineAssistant } from './assistant/offline';
 import type { Assistant } from './assistant/types';
-import { demoSignIn, gmailSignIn } from './signIn';
+import { demoSignIn, fetchMe, gmailSignIn } from './signIn';
+import { HttpAdminApi, type AdminApi, type Role } from './admin/api';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -22,9 +23,21 @@ interface Session {
   assistant: Assistant;
 }
 
-function gmailSession(auth: GoogleAuth, config: AppConfig): Session {
+/** Shared mailboxes this member may open (backend), or none without one. */
+async function sharedMailboxes(auth: GoogleAuth, config: AppConfig): Promise<string[]> {
+  if (!config.sessionUrl) return [];
+  const res = await fetch('/api/mailboxes', { headers: { Authorization: 'Bearer ' + (await auth.token()) } });
+  if (!res.ok) return [];
+  return ((await res.json()) as { mailboxes?: string[] }).mailboxes || [];
+}
+
+function gmailSession(auth: GoogleAuth, config: AppConfig, mailbox: string | null): Session {
   const notes = config.notesUrl ? new RemoteNotes(config.notesUrl, () => auth.token()) : new LocalNotes();
-  const provider = new GmailProvider(auth, config.orgDomain, notes);
+  const provider = new GmailProvider(auth, config.orgDomain, notes, {
+    mailbox: mailbox || undefined,
+    proxyBase: location.origin + '/api/mailboxes',
+    sharedMailboxes: () => sharedMailboxes(auth, config)
+  });
   const assistant = config.assistantUrl
     ? new HttpAssistant(config.assistantUrl, () => auth.token().catch(() => null))
     : new OfflineAssistant();
@@ -48,6 +61,9 @@ function Root({ config }: { config: AppConfig }) {
   const [mode, setMode] = useState<Mode>(() => (auth?.hasValidToken() ? 'gmail' : 'login'));
   const [reason, setReason] = useState<LoginReason>(() => (auth?.sessionExpired() ? 'expired' : 'signed-out'));
   const [nonce, setNonce] = useState(0);
+  const [role, setRole] = useState<Role | null>(null);
+  /** Shared mailbox being shown; null = the user's own. */
+  const [shared, setShared] = useState<string | null>(null);
 
   useEffect(() => {
     if (!auth) return;
@@ -70,16 +86,31 @@ function Root({ config }: { config: AppConfig }) {
     return () => clearInterval(t);
   }, [auth, mode]);
 
+  // A session restored from a previous visit skips the login screen; ask the backend who this is.
+  useEffect(() => {
+    if (mode !== 'gmail' || !auth || role || !config.sessionUrl) return;
+    let live = true;
+    auth.token().then(t => fetchMe(config.sessionUrl, t)).then(me => live && me && setRole(me.role)).catch(() => {});
+    return () => { live = false; };
+  }, [mode, auth, role, config.sessionUrl]);
+
   const session = useMemo<Session | null>(() => {
     if (mode === 'demo') return { provider: new DemoProvider(), assistant: new DemoAssistant() };
-    if (mode === 'gmail' && auth) return gmailSession(auth, config);
+    if (mode === 'gmail' && auth) return gmailSession(auth, config, shared);
     return null;
-  }, [mode, auth, config, nonce]); // a new nonce starts a fresh session (e.g. after signing out of the demo)
+  }, [mode, auth, config, nonce, shared]); // a new nonce starts a fresh session (e.g. after signing out of the demo)
+
+  const admin = useMemo<AdminApi | null>(
+    () => (mode === 'gmail' && auth && config.sessionUrl && (role === 'admin' || role === 'super_admin') ? new HttpAdminApi('/api/admin', () => auth.token()) : null),
+    [mode, auth, config.sessionUrl, role]
+  );
 
   const signOut = () => {
     session?.provider.signOut?.();
     setReason('signed-out');
     setMode('login');
+    setRole(null);
+    setShared(null);
     setNonce(n => n + 1);
   };
 
@@ -89,7 +120,11 @@ function Root({ config }: { config: AppConfig }) {
         orgDomain={auth ? config.orgDomain : DEMO_DOMAIN}
         reason={reason}
         simulated={!auth}
-        signIn={(o, checking) => (auth ? gmailSignIn(auth, config, o, checking) : demoSignIn(o, checking))}
+        signIn={async (o, checking) => {
+          const who = await (auth ? gmailSignIn(auth, config, o, checking) : demoSignIn(o, checking));
+          setRole(who.role || null);
+          return who;
+        }}
         onDone={() => { setReason('signed-out'); setMode(auth ? 'gmail' : 'demo'); }}
         onDemo={auth ? () => setMode('demo') : undefined}
       />
@@ -98,9 +133,12 @@ function Root({ config }: { config: AppConfig }) {
 
   return (
     <MailApp
-      key={mode + nonce}
+      key={mode + nonce + (shared || '')}
       provider={session.provider}
       assistant={session.assistant}
+      role={mode === 'demo' ? 'super_admin' : role}
+      admin={admin}
+      onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
       onSignOut={signOut}
     />

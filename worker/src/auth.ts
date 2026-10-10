@@ -1,5 +1,8 @@
 import type { Env } from './env';
 import { HttpError } from './http';
+import { googleClientId } from './config';
+
+export type Role = 'member' | 'admin' | 'super_admin';
 
 export interface User {
   /** The Google account that signed in (may be a linked personal account). */
@@ -7,6 +10,7 @@ export interface User {
   /** The Axal VC member it acts as. */
   memberEmail: string;
   name: string;
+  role: Role;
 }
 
 interface TokenInfo {
@@ -31,6 +35,15 @@ export function allowedDomains(env: Env): string[] {
   return (env.ALLOWED_DOMAINS || '').split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
 }
 
+export function superAdmins(env: Env): string[] {
+  return (env.SUPER_ADMINS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+}
+
+function roleOf(env: Env, memberEmail: string, stored?: string): Role {
+  if (superAdmins(env).includes(memberEmail)) return 'super_admin';
+  return stored === 'admin' ? 'admin' : 'member';
+}
+
 const SUSPENDED = (email: string) =>
   new HttpError(403, email + ' is suspended in Axal VC. Contact your administrator to restore access.', 'suspended');
 
@@ -42,21 +55,22 @@ const SUSPENDED = (email: string) =>
 export async function resolveMember(env: Env, googleEmail: string): Promise<User> {
   const domain = googleEmail.split('@')[1];
   if (allowedDomains(env).includes(domain)) {
-    const m = await env.DB.prepare('SELECT name, status FROM members WHERE email = ?1').bind(googleEmail).first<{ name: string; status: string }>();
-    if (m?.status === 'suspended') throw SUSPENDED(googleEmail);
-    return { email: googleEmail, memberEmail: googleEmail, name: m?.name || '' };
+    const m = await env.DB.prepare('SELECT name, status, role FROM members WHERE email = ?1').bind(googleEmail).first<{ name: string; status: string; role: string }>();
+    // Super admins can't be suspended from the app, so they can't be locked out.
+    if (m?.status === 'suspended' && !superAdmins(env).includes(googleEmail)) throw SUSPENDED(googleEmail);
+    return { email: googleEmail, memberEmail: googleEmail, name: m?.name || '', role: roleOf(env, googleEmail, m?.role) };
   }
   const linked = await env.DB
-    .prepare('SELECT m.email, m.name, m.status FROM linked_accounts l JOIN members m ON m.email = l.member_email WHERE l.google_email = ?1')
+    .prepare('SELECT m.email, m.name, m.status, m.role FROM linked_accounts l JOIN members m ON m.email = l.member_email WHERE l.google_email = ?1')
     .bind(googleEmail)
-    .first<{ email: string; name: string; status: string }>();
+    .first<{ email: string; name: string; status: string; role: string }>();
   if (!linked) {
     throw new HttpError(403,
       'Sign in with your Axal VC email, choose the Google account linked to your profile, or ask your administrator to link this one.',
       'not_linked');
   }
-  if (linked.status === 'suspended') throw SUSPENDED(linked.email);
-  return { email: googleEmail, memberEmail: linked.email, name: linked.name };
+  if (linked.status === 'suspended' && !superAdmins(env).includes(linked.email)) throw SUSPENDED(linked.email);
+  return { email: googleEmail, memberEmail: linked.email, name: linked.name, role: roleOf(env, linked.email, linked.role) };
 }
 
 /**
@@ -75,7 +89,8 @@ export async function authenticate(req: Request, env: Env): Promise<User> {
   const res = await fetch('https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(token));
   if (!res.ok) throw new HttpError(401, 'Your Google session is not valid. Sign in again.', 'signed_out');
   const info = (await res.json()) as TokenInfo;
-  if (!env.GOOGLE_CLIENT_ID || (info.aud !== env.GOOGLE_CLIENT_ID && info.azp !== env.GOOGLE_CLIENT_ID)) {
+  const clientId = await googleClientId(env);
+  if (!clientId || (info.aud !== clientId && info.azp !== clientId)) {
     throw new HttpError(401, 'Token was not issued to Axal VC Mail', 'signed_out');
   }
   const email = (info.email || '').toLowerCase();

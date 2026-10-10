@@ -3,6 +3,7 @@ import { GoogleSignInError, type GoogleAuth, type SignInOptions } from './provid
 import { LoginError, type SignedIn } from './components/LoginScreen';
 import { PROFILES } from './providers/demo/data';
 import { profileName } from './lib/signature';
+import type { Me, Role } from './admin/api';
 
 const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 
@@ -11,9 +12,19 @@ function nameFromEmail(email: string): string {
 }
 
 interface SessionResponse {
-  user?: { email: string; memberEmail: string; name: string };
+  user?: Me;
   error?: string;
   code?: string;
+}
+
+/** The member behind a token, for a session restored without the login screen. */
+export async function fetchMe(sessionUrl: string, token: string): Promise<Me | null> {
+  try {
+    const res = await fetch(sessionUrl, { headers: { Authorization: 'Bearer ' + token } });
+    return res.ok ? ((await res.json()) as SessionResponse).user || null : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -47,7 +58,7 @@ export async function gmailSignIn(auth: GoogleAuth, config: AppConfig, o: SignIn
       throw new LoginError("Couldn't sign you in", j.error || 'The server rejected the sign-in (' + res.status + ').');
     }
     auth.loginHint = j.user.email;
-    return { name: j.user.name || nameFromEmail(j.user.memberEmail), email: j.user.email };
+    return { name: j.user.name || nameFromEmail(j.user.memberEmail), email: j.user.email, role: j.user.role };
   }
 
   // Frontend running without the backend: Google's profile is all there is.
@@ -65,5 +76,5 @@ export async function demoSignIn(o: SignInOptions, checking: () => void): Promis
   await sleep(900);
   const email = o.hint || PROFILES[0].email;
   const p = PROFILES.find(x => x.email === email);
-  return { name: p ? profileName(p) : nameFromEmail(email), email };
+  return { name: p ? profileName(p) : nameFromEmail(email), email, role: 'super_admin' satisfies Role };
 }

@@ -600,3 +600,8 @@ button.attachment:hover { background: var(--bg); }
 .login-links a { color: #fff; text-decoration: underline; }
 .login-links a:hover { color: var(--accent-line); }
 @media (max-width: 480px) { .login-card { padding: 22px 18px 18px; } }
+
+/* Members & access */
+.trow.members { grid-template-columns: minmax(0, 1.4fr) 130px 110px minmax(0, 2fr) 100px; padding: 11px 16px; min-width: 760px; }
+.trow.members.head { padding: 9px 16px; }
+.admin-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }

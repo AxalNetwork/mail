@@ -113,6 +113,26 @@ describe('GmailProvider', () => {
     expect(ids.map(i => [i.addr, i.short])).toEqual([['julian@axal.vc', 'Personal'], ['investors@axal.vc', 'Alias']]);
   });
 
+  it('opens a shared mailbox through the backend proxy, keeping the person and contacts on Google', async () => {
+    const calls = mockFetch({
+      ...baseRoutes,
+      'GET /users/me/threads': () => ({ threads: [] }),
+      'POST /users/me/messages/send': () => ({ id: 'm1', threadId: 't1' })
+    });
+    const g = new GmailProvider(fakeAuth(), '', undefined, {
+      mailbox: 'deals@axal.vc', proxyBase: 'https://mail.axal.vc/api/mailboxes', sharedMailboxes: async () => ['deals@axal.vc', 'ir@axal.vc']
+    });
+    await g.listThreads({ folder: 'inbox' });
+    expect(calls.find(c => c.url.pathname.endsWith('/threads'))!.url.href).toMatch(/^https:\/\/mail\.axal\.vc\/api\/mailboxes\/deals%40axal\.vc\/gmail\/v1\/users\/me\/threads/);
+    await g.send({ ...out, reply: undefined, note: '', attachments: [] });
+    expect(calls.find(c => c.url.pathname.endsWith('/messages/send'))!.url.pathname).toBe('/api/mailboxes/deals%40axal.vc/upload/gmail/v1/users/me/messages/send');
+    expect((await g.account()).email).toBe('julian@axal.vc');
+    expect(calls.find(c => c.url.pathname.endsWith('/userinfo'))!.url.hostname).toBe('www.googleapis.com');
+    expect(await g.mailboxes()).toEqual([{ addr: 'julian@axal.vc', access: 'Your mailbox' }, { addr: 'deals@axal.vc', access: 'Shared' }, { addr: 'ir@axal.vc', access: 'Shared' }]);
+    expect(g.mailbox).toBe('deals@axal.vc');
+    expect(g.capabilities.installSignature).toBe(false);
+  });
+
   const identity: Identity = { id: 'julian@axal.vc', addr: 'julian@axal.vc', name: 'Julian Park', kind: 'Your mailbox', short: 'Personal', note: '' };
   const out: OutgoingMessage = {
     identity, to: [{ name: 'Maya Chen', email: 'maya@n.example', org: '' }], cc: [], bcc: [], subject: 'Re: Seed round', html: '<p>Hi</p>', text: 'Hi',
