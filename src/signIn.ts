@@ -17,10 +17,15 @@ interface SessionResponse {
   code?: string;
 }
 
-/** The member behind a token, for a session restored without the login screen. */
-export async function fetchMe(sessionUrl: string, token: string): Promise<Me | null> {
+/**
+ * The member behind a token, for a session restored without the login screen:
+ * the member, 'denied' when the backend refuses the account (not a member,
+ * suspended, token not ours), or null when the backend can't be reached.
+ */
+export async function fetchMe(sessionUrl: string, token: string): Promise<Me | 'denied' | null> {
   try {
     const res = await fetch(sessionUrl, { headers: { Authorization: 'Bearer ' + token } });
+    if (res.status === 401 || res.status === 403) return 'denied';
     return res.ok ? ((await res.json()) as SessionResponse).user || null : null;
   } catch {
     return null;
@@ -56,6 +61,12 @@ export async function gmailSignIn(auth: GoogleAuth, config: AppConfig, o: SignIn
       if (j.code === 'not_linked') throw new LoginError("This Google account isn't linked to Axal VC", j.error || '');
       if (j.code === 'suspended') throw new LoginError('Account suspended', j.error || '');
       throw new LoginError("Couldn't sign you in", j.error || 'The server rejected the sign-in (' + res.status + ').');
+    }
+    // The Google account decides whose mail opens, so it must be the address that was typed.
+    if (o.hint && j.user.email.toLowerCase() !== o.hint.toLowerCase()) {
+      auth.signOut();
+      throw new LoginError('Different Google account',
+        'You entered ' + o.hint + ' but Google signed in ' + j.user.email + '. Choose ' + o.hint + ' in the Google window, or sign out of the other account in your browser first.');
     }
     auth.loginHint = j.user.email;
     return { name: j.user.name || nameFromEmail(j.user.memberEmail), email: j.user.email, role: j.user.role };

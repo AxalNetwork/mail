@@ -10,7 +10,7 @@ It is one Cloudflare Worker at **https://mail.axal.vc**:
 | **Backend** (`/api/*`) | Confirms that a Google account belongs to an active Axal VC member, runs the Claude-powered assistant, and stores internal notes the whole team can see. | `worker/` |
 | **Database** | Cloudflare D1 `axal-mail`: members, linked Google accounts, notes. | `worker/migrations/` |
 
-Without a Google client ID, the app runs as a **demo**: sign-in is simulated, the data is fictional, and nothing is delivered.
+This is a real mail client: only verified Google accounts of active Axal VC members get in, and each sees their own Gmail. A deployment without a Google client ID lets nobody in ("Sign-in isn't set up yet"). The demo (simulated sign-in, fictional data, nothing delivered) exists only in local development with `npm run dev`.
 
 ## Run it locally
 

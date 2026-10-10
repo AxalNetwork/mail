@@ -55,7 +55,32 @@ export function App() {
   );
 }
 
+/**
+ * The simulated sign-in and sample data exist only in local development
+ * (`npm run dev`). A deployed build never lets anyone in without a verified
+ * Google account, and has no demo mode.
+ */
+const DEMO_ALLOWED = import.meta.env.DEV;
+
+function NotConfigured() {
+  return (
+    <div className="connect">
+      <div className="card connect-card" role="alert">
+        <span className="mono-label">Axal VC Mail</span>
+        <h1>Sign-in isn't set up yet</h1>
+        <p>This deployment has no Google OAuth client ID, so nobody can sign in. An administrator needs to set
+          <code> GOOGLE_CLIENT_ID</code> (or <code>GMAIL_CLIENT_ID</code>) on the <code>mail</code> Worker.</p>
+      </div>
+    </div>
+  );
+}
+
 function Root({ config }: { config: AppConfig }) {
+  if (!config.googleClientId && !DEMO_ALLOWED) return <NotConfigured />;
+  return <Session config={config} />;
+}
+
+function Session({ config }: { config: AppConfig }) {
   // Without a Google client ID the deployment is a demo: sign-in is simulated.
   const auth = useMemo(() => (config.googleClientId ? new GoogleAuth(config.googleClientId) : null), [config]);
   const [mode, setMode] = useState<Mode>(() => (auth?.hasValidToken() ? 'gmail' : 'login'));
@@ -86,13 +111,27 @@ function Root({ config }: { config: AppConfig }) {
     return () => clearInterval(t);
   }, [auth, mode]);
 
-  // A session restored from a previous visit skips the login screen; ask the backend who this is.
+  // A session restored from a previous visit skipped the login screen: the
+  // mailbox stays hidden until the backend confirms an active member.
+  const [checkFailed, setCheckFailed] = useState(false);
   useEffect(() => {
     if (mode !== 'gmail' || !auth || role || !config.sessionUrl) return;
     let live = true;
-    auth.token().then(t => fetchMe(config.sessionUrl, t)).then(me => live && me && setRole(me.role)).catch(() => {});
+    setCheckFailed(false);
+    auth.token()
+      .then(t => fetchMe(config.sessionUrl, t))
+      .then(me => {
+        if (!live) return;
+        if (me === 'denied') {
+          auth.signOut();
+          setReason('lost');
+          setMode('login');
+        } else if (me) setRole(me.role);
+        else setCheckFailed(true);
+      })
+      .catch(() => live && setCheckFailed(true));
     return () => { live = false; };
-  }, [mode, auth, role, config.sessionUrl]);
+  }, [mode, auth, role, config.sessionUrl, nonce]);
 
   const session = useMemo<Session | null>(() => {
     if (mode === 'demo') return { provider: new DemoProvider(), assistant: new DemoAssistant() };
@@ -126,8 +165,27 @@ function Root({ config }: { config: AppConfig }) {
           return who;
         }}
         onDone={() => { setReason('signed-out'); setMode(auth ? 'gmail' : 'demo'); }}
-        onDemo={auth ? () => setMode('demo') : undefined}
+        onDemo={auth && DEMO_ALLOWED ? () => setMode('demo') : undefined}
       />
+    );
+  }
+
+  if (mode === 'gmail' && config.sessionUrl && !role) {
+    return (
+      <div className="connect">
+        {checkFailed
+          ? (
+            <div className="card connect-card">
+              <h1>Couldn't reach Axal VC Mail</h1>
+              <p>Your access couldn't be confirmed. Check your connection and try again.</p>
+              <div className="row-wrap">
+                <button className="btn primary lg" onClick={() => setNonce(n => n + 1)}>Try again</button>
+                <button className="btn lg" onClick={signOut}>Sign out</button>
+              </div>
+            </div>
+          )
+          : <div className="spinner" aria-label="Checking your access" />}
+      </div>
     );
   }
 
