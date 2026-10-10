@@ -104,7 +104,7 @@ jobs:
             done
             echo "Deployed configuration ($DEV/api/config): $CONFIG"
             if echo "$CONFIG" | grep -q '"googleClientId":""'; then
-              echo "::warning::The Worker has no Google client ID (GOOGLE_CLIENT_ID or GMAIL_CLIENT_ID), so mail.axal.vc runs as a demo."
+              echo "::warning::The Worker has no Google client ID (GOOGLE_CLIENT_ID or GMAIL_CLIENT_ID), so nobody can sign in to mail.axal.vc."
             fi
           fi
           # Cloudflare bot protection on the zone may challenge GitHub's runners;
