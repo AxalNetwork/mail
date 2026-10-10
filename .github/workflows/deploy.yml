@@ -82,9 +82,9 @@ jobs:
         # would replace the value configured on the Worker.
         run: |
           if [ -n "$GOOGLE_CLIENT_ID" ]; then
-            npx wrangler deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}"
+            npx wrangler deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}" | tee deploy.log
           else
-            npx wrangler deploy
+            npx wrangler deploy | tee deploy.log
           fi
       - name: Set the assistant API key
         if: steps.creds.outputs.ok == 'true' && env.ANTHROPIC_API_KEY != ''
@@ -93,6 +93,19 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         # A new custom domain can take a few minutes to get its certificate.
         run: |
+          # The deployed configuration, read past the zone's bot protection.
+          DEV=$(grep -o 'https://[a-z0-9.-]*\.workers\.dev' deploy.log | head -1 || true)
+          if [ -n "$DEV" ]; then
+            for i in $(seq 1 12); do
+              CONFIG=$(curl -fsS "$DEV/api/config" || true)
+              [ -n "$CONFIG" ] && break
+              sleep 5
+            done
+            echo "Deployed configuration ($DEV/api/config): $CONFIG"
+            if echo "$CONFIG" | grep -q '"googleClientId":""'; then
+              echo "::warning::The Worker has no Google client ID (GOOGLE_CLIENT_ID or GMAIL_CLIENT_ID), so mail.axal.vc runs as a demo."
+            fi
+          fi
           # Cloudflare bot protection on the zone may challenge GitHub's runners;
           # that says nothing about the deploy, which wrangler already confirmed.
           if curl -sS -o /dev/null -D - https://mail.axal.vc/api/health | grep -qi '^cf-mitigated: challenge'; then

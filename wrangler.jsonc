@@ -21,7 +21,9 @@
   // Creates the mail.axal.vc DNS record and certificate on deploy.
   // Requires the axal.vc zone to be in this Cloudflare account.
   "routes": [{ "pattern": "mail.axal.vc", "custom_domain": true }],
-  "workers_dev": false,
+  // The workers.dev address lets the deploy check reach the Worker past the
+  // zone's bot protection; sign-in only works on mail.axal.vc (OAuth origin).
+  "workers_dev": true,
 
   "d1_databases": [
     {
