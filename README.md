@@ -60,12 +60,13 @@ Configuration lives in the Worker, not in the build: the frontend reads `/api/co
 
 | Worker setting | Where | |
 | --- | --- | --- |
-| `GOOGLE_CLIENT_ID` | var (`--var` at deploy, or `wrangler.jsonc`) | OAuth client the API accepts tokens for |
+| `GOOGLE_CLIENT_ID` (or `GMAIL_CLIENT_ID`) | var or secret | OAuth client the API accepts tokens for, and the one sign-in uses |
 | `ALLOWED_DOMAINS` | var, default `axal.vc` | Email domains whose verified accounts are members |
 | `ORG_DOMAIN` | var, default `axal.vc` | Domain the composer treats as internal |
 | `SUPER_ADMINS` | var, `guillaume.lauzier@axal.vc` | Members with full rights in *Members & access*. They can't be suspended or demoted from the app. |
 | `ANTHROPIC_API_KEY` | secret | Assistant; without it the assistant endpoints answer 503 and the UI falls back to templates |
 | `GOOGLE_SERVICE_ACCOUNT` | secret | Service account key (JSON) with domain-wide delegation; enables shared mailboxes |
+| `GMAIL_REFRESH_TOKEN` + `GMAIL_CLIENT_SECRET` | secrets | Instead of a service account: a refresh token (gmail.modify, issued to the client ID) for one mailbox, which super admins can then share |
 
 ## Google OAuth client
 
@@ -107,7 +108,7 @@ Nobody changes their own role or status from the app.
 
 A super admin can give members access to another Workspace mailbox; it then appears in the **Mailbox** menu at the top. The Worker reads it with Google Workspace **domain-wide delegation**; the browser never gets that mailbox's credentials, and the Worker only lets through what the mail client does (read, label, archive, trash, drafts, send), not deletes, filters, forwarding or settings.
 
-Set it up once:
+For a single mailbox, a refresh token is enough: put `GMAIL_REFRESH_TOKEN` and `GMAIL_CLIENT_SECRET` on the Worker, and *Members & access* shows which mailbox it opens. For any mailbox on the domain, set up a service account once:
 
 1. Google Cloud console, same project as the OAuth client: **IAM & Admin → Service accounts → Create service account** (no roles needed). Open it → **Keys → Add key → JSON**, and download the file.
 2. Copy the service account's **Unique ID** (a long number, on its Details tab).

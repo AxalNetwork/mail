@@ -25,6 +25,8 @@ export interface MemberChange {
 export interface MailboxGrants {
   /** Domain-wide delegation is configured on the backend. */
   enabled: boolean;
+  /** The mailbox the Worker's GMAIL_REFRESH_TOKEN opens, if any. */
+  refreshTokenMailbox?: string | null;
   mailboxes: { mailbox: string; members: string[] }[];
 }
 

@@ -5,6 +5,12 @@ export interface Env {
   DB: D1Database;
   /** OAuth Web client ID; tokens must be issued to this client. */
   GOOGLE_CLIENT_ID?: string;
+  /** Same as GOOGLE_CLIENT_ID (either name works). */
+  GMAIL_CLIENT_ID?: string;
+  /** Secret. OAuth client secret, used with GMAIL_REFRESH_TOKEN. */
+  GMAIL_CLIENT_SECRET?: string;
+  /** Secret. Refresh token for one Workspace mailbox, which can then be shared with members. */
+  GMAIL_REFRESH_TOKEN?: string;
   /** Comma-separated email domains allowed to use the API, e.g. "axal.vc". */
   ALLOWED_DOMAINS: string;
   /** Comma-separated member emails with full rights, including granting admin. */

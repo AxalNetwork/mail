@@ -44,13 +44,19 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
       return info ? Response.json(info) : Response.json({ error_description: 'Invalid Value' }, { status: 400 });
     }
     if (url.hostname === 'oauth2.googleapis.com' && url.pathname === '/token') {
-      const assertion = new URLSearchParams(await req.text()).get('assertion') || '';
+      const form = new URLSearchParams(await req.text());
+      if (form.get('grant_type') === 'refresh_token') {
+        if (form.get('refresh_token') !== 'rt-ir' || form.get('client_secret') !== 'shh' || form.get('client_id') !== 'client-1') return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        return Response.json({ access_token: 'dwd:ir@axal.vc', expires_in: 3600 });
+      }
+      const assertion = form.get('assertion') || '';
       const claims = JSON.parse(atob(assertion.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
       if (delegationError) return Response.json({ error: delegationError }, { status: 401 });
       return Response.json({ access_token: 'dwd:' + claims.sub, expires_in: 3600 });
     }
     if (url.hostname === 'gmail.googleapis.com') {
       gmailCalls.push({ url: url.pathname + url.search, method: req.method, auth: req.headers.get('Authorization'), body: req.method === 'GET' ? '' : await req.text() });
+      if (url.pathname.endsWith('/profile')) return Response.json({ emailAddress: (req.headers.get('Authorization') || '').replace('Bearer dwd:', '') });
       return Response.json({ ok: true });
     }
     if (url.hostname === 'api.anthropic.com') {
@@ -299,7 +305,7 @@ describe('shared mailboxes', () => {
   it('opens a granted mailbox through the proxy with a delegated token', async () => {
     env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
     const g = await post('/api/admin/mailboxes', 'boss', { mailbox: 'Deals@axal.vc', memberEmail: 'julian@axal.vc' });
-    expect(await g.json()).toEqual({ enabled: true, mailboxes: [{ mailbox: 'deals@axal.vc', members: ['julian@axal.vc'] }] });
+    expect(await g.json()).toEqual({ enabled: true, refreshTokenMailbox: null, mailboxes: [{ mailbox: 'deals@axal.vc', members: ['julian@axal.vc'] }] });
     expect(gmailCalls[0]).toMatchObject({ url: '/gmail/v1/users/me/profile', auth: 'Bearer dwd:deals@axal.vc' });
 
     expect(await (await call('/api/mailboxes', { token: 'good' })).json()).toEqual({ enabled: true, mailboxes: ['deals@axal.vc'] });
@@ -328,6 +334,32 @@ describe('shared mailboxes', () => {
 
     await call('/api/admin/mailboxes?mailbox=deals%40axal.vc&memberEmail=julian%40axal.vc', { method: 'DELETE', token: 'boss', headers: { Origin: ORIGIN } });
     expect((await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/threads', { token: 'good' })).status).toBe(403);
+  });
+
+  it('accepts GMAIL_CLIENT_ID as the client ID', async () => {
+    env.GOOGLE_CLIENT_ID = undefined;
+    env.GMAIL_CLIENT_ID = 'client-1';
+    expect(await (await call('/api/config')).json()).toMatchObject({ googleClientId: 'client-1' });
+    expect((await call('/api/session', { token: 'good' })).status).toBe(200);
+  });
+
+  it('shares the mailbox behind GMAIL_REFRESH_TOKEN without a service account', async () => {
+    env.GMAIL_REFRESH_TOKEN = 'rt-ir';
+    env.GMAIL_CLIENT_SECRET = 'shh';
+    expect(await (await call('/api/admin/mailboxes', { token: 'boss' })).json()).toMatchObject({ enabled: true, refreshTokenMailbox: 'ir@axal.vc' });
+    expect((await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' })).status).toBe(400);
+    expect((await post('/api/admin/mailboxes', 'boss', { mailbox: 'ir@axal.vc', memberEmail: 'julian@axal.vc' })).status).toBe(200);
+    expect((await call('/api/mailboxes/ir%40axal.vc/gmail/v1/users/me/threads', { token: 'good' })).status).toBe(200);
+    expect(gmailCalls.at(-1)).toMatchObject({ url: '/gmail/v1/users/me/threads', auth: 'Bearer dwd:ir@axal.vc' });
+  });
+
+  it('reports a rejected GMAIL_REFRESH_TOKEN', async () => {
+    env.GMAIL_REFRESH_TOKEN = 'revoked';
+    env.GMAIL_CLIENT_SECRET = 'shh';
+    expect(await (await call('/api/admin/mailboxes', { token: 'boss' })).json()).toMatchObject({ enabled: true, refreshTokenMailbox: null });
+    const r = await post('/api/admin/mailboxes', 'boss', { mailbox: 'ir@axal.vc', memberEmail: 'julian@axal.vc' });
+    expect(r.status).toBe(400);
+    expect((await r.json() as { error: string }).error).toContain('rejected');
   });
 
   it('explains a missing domain-wide delegation grant', async () => {

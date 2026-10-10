@@ -12,7 +12,7 @@ function buildConfig(): Plugin {
     name: 'axal-build-config',
     apply: 'build',
     generateBundle() {
-      const googleClientId = (process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+      const googleClientId = (process.env.GOOGLE_CLIENT_ID || process.env.GMAIL_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '').trim();
       this.emitFile({ type: 'asset', fileName: 'build-config.json', source: JSON.stringify({ googleClientId }) });
     }
   };

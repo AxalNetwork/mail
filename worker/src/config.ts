@@ -4,13 +4,14 @@ import type { Env } from './env';
 const built = new WeakMap<Fetcher, Promise<string>>();
 
 /**
- * The OAuth client ID: the Worker variable, or else the value the frontend
+ * The OAuth client ID: the Worker variable (GOOGLE_CLIENT_ID or GMAIL_CLIENT_ID), or else the value the frontend
  * build captured from the build environment (`dist/build-config.json`, written
  * by vite.config.ts). The second covers a client ID set as a Workers Builds
  * build variable instead of a runtime variable.
  */
 export function googleClientId(env: Env): Promise<string> {
-  if (env.GOOGLE_CLIENT_ID?.trim()) return Promise.resolve(env.GOOGLE_CLIENT_ID.trim());
+  const set = (env.GOOGLE_CLIENT_ID || env.GMAIL_CLIENT_ID || '').trim();
+  if (set) return Promise.resolve(set);
   let p = built.get(env.ASSETS);
   if (!p) {
     p = env.ASSETS.fetch(new Request('https://assets.local/build-config.json'))

@@ -161,8 +161,14 @@ export function MembersAdmin({ api: real, role, demo }: Props) {
             <span className="mono-label">Shared mailboxes</span>
             {!grants.enabled && (
               <span className="muted" style={{ fontSize: 12.5 }}>
-                Not set up yet. Shared mailboxes need a Google service account with domain-wide delegation, stored on the Worker as the
-                <code> GOOGLE_SERVICE_ACCOUNT</code> secret. See the README, “Shared mailboxes”.
+                Not set up yet. Shared mailboxes need a Google service account with domain-wide delegation (the
+                <code> GOOGLE_SERVICE_ACCOUNT</code> secret), or a refresh token for one mailbox (<code>GMAIL_REFRESH_TOKEN</code> and
+                <code> GMAIL_CLIENT_SECRET</code>). See the README, “Shared mailboxes”.
+              </span>
+            )}
+            {grants.refreshTokenMailbox && (
+              <span className="muted" style={{ fontSize: 12.5 }}>
+                The Worker's stored Gmail token opens <b>{grants.refreshTokenMailbox}</b>. Give members access to it below.
               </span>
             )}
             {grants.mailboxes.length === 0 && grants.enabled && <span className="faint" style={{ fontSize: 12.5 }}>No shared mailboxes yet.</span>}

@@ -1,6 +1,6 @@
 import type { Env } from './env';
 import { allowedDomains, type User } from './auth';
-import { delegatedToken, serviceAccount } from './delegation';
+import { delegatedToken, delegationEnabled, refreshTokenEmail } from './delegation';
 import { HttpError, json, readJson } from './http';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -19,7 +19,7 @@ async function canOpen(env: Env, user: User, mailbox: string): Promise<boolean> 
 
 /** GET /api/mailboxes: the shared mailboxes this member may open. */
 export async function listForUser(env: Env, user: User): Promise<Response> {
-  if (!serviceAccount(env)) return json({ enabled: false, mailboxes: [] });
+  if (!delegationEnabled(env)) return json({ enabled: false, mailboxes: [] });
   const rows = (await env.DB.prepare('SELECT mailbox FROM mailbox_access WHERE member_email = ?1 AND mailbox != ?1 ORDER BY mailbox')
     .bind(user.memberEmail).all<{ mailbox: string }>()).results;
   return json({ enabled: true, mailboxes: rows.map(r => r.mailbox) });
@@ -90,7 +90,12 @@ export async function listGrants(env: Env) {
     .all<{ mailbox: string; member_email: string }>()).results;
   const by = new Map<string, string[]>();
   for (const r of rows) by.set(r.mailbox, [...(by.get(r.mailbox) || []), r.member_email]);
-  return { enabled: !!serviceAccount(env), mailboxes: [...by].map(([mailbox, members]) => ({ mailbox, members })) };
+  return {
+    enabled: delegationEnabled(env),
+    /** The mailbox GMAIL_REFRESH_TOKEN opens, if any. */
+    refreshTokenMailbox: await refreshTokenEmail(env),
+    mailboxes: [...by].map(([mailbox, members]) => ({ mailbox, members }))
+  };
 }
 
 async function grant(env: Env, body: { mailbox?: unknown; memberEmail?: unknown }) {
