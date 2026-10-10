@@ -3,6 +3,8 @@ import { escapeHtml as e } from './html';
 
 export const ORG_NAME = 'Axal VC';
 export const ORG_URL = 'https://axal.vc';
+/** Absolute, because recipients' mail clients load it. */
+export const LOGO_URL = 'https://mail.axal.vc/logo.png';
 
 export function profileName(p: Profile): string {
   return [p.first, p.last].filter(Boolean).join(' ');
@@ -50,7 +52,7 @@ export function signatureHtml(p: Profile): string {
     `<div style="font-size:12px;padding-top:6px">${links.join(' ')}</div>` +
     `</td>` +
     `<td valign="middle" align="center" width="70" style="width:70px;min-width:70px;padding:14px 0 4px 14px;border-left:1px solid #ececf1">` +
-    `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td width="24" height="24" align="center" valign="middle" style="width:24px;height:24px;border-radius:6px;background:#7c3aed;color:#ffffff;font-family:${SANS};font-weight:700;font-size:13px">A</td></tr></table>` +
+    `<a href="${ORG_URL}" style="text-decoration:none"><img src="${LOGO_URL}" alt="${ORG_NAME}" width="32" height="31" style="display:block;width:32px;height:31px;border:0;margin:0 auto"></a>` +
     `<a href="${ORG_URL}" style="display:block;padding-top:4px;font-family:${MONO};font-size:10px;color:#6b6577;text-decoration:none">axal.vc</a>` +
     `</td>` +
     `</tr></table>`

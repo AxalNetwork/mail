@@ -29,7 +29,7 @@ export function Header(p: Props) {
     <header className="topbar">
       <button className="btn ghost sm menu-btn" aria-label="Open navigation" onClick={p.onToggleNav}>☰</button>
       <div className="brand">
-        <div className="brand-mark">A</div>
+        <img className="brand-mark" src="/logo.png" alt="" width={28} height={27} />
         <span className="brand-name">Axal VC</span>
         <span className="brand-tag">MAIL</span>
       </div>

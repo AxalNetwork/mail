@@ -106,6 +106,7 @@ describe('signature', () => {
     expect(html).not.toContain('LINKEDIN');
     expect(html).toContain('WHATSAPP');
     expect(html).toContain('&lt;b&gt;Admin');
+    expect(html).toContain('<img src="https://mail.axal.vc/logo.png" alt="Axal VC"');
     expect(signatureText(PROFILES[0])).toContain('WhatsApp: +1 212 555 0148');
   });
 });
