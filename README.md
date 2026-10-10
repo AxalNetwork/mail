@@ -48,6 +48,10 @@ Still needed, once:
 
 4. Push to the default branch. `.github/workflows/deploy.yml` tests everything, applies migrations, deploys the Worker with the frontend, sets the Anthropic key, and checks `https://mail.axal.vc/api/health`.
 
+The Worker is named `mail` (`wrangler.jsonc`), so the deploy replaces a `mail` Worker created in the dashboard.
+
+**Nothing at mail.axal.vc?** Attach the domain as a Worker **custom domain**, not a DNS record. A CNAME from `mail.axal.vc` to `*.workers.dev` is not served. Delete any `mail` CNAME/A record under DNS → Records; then the deploy (or Workers & Pages → mail → Settings → Domains & Routes → Add → Custom domain) creates the right record.
+
 To deploy by hand instead: `npx wrangler login`, then `npm run deploy` and `npx wrangler secret put ANTHROPIC_API_KEY`.
 
 Configuration lives in the Worker, not in the build: the frontend reads `/api/config` at startup, so changing the client ID or enabling the assistant needs no rebuild.
