@@ -81,6 +81,7 @@ jobs:
         # Pass the client ID only when the repository sets it; an empty --var
         # would replace the value configured on the Worker.
         run: |
+          set -o pipefail
           if [ -n "$GOOGLE_CLIENT_ID" ]; then
             npx wrangler deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}" | tee deploy.log
           else
