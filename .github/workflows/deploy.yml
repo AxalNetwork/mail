@@ -59,12 +59,29 @@ jobs:
         run: npm ci
       - if: steps.creds.outputs.ok == 'true'
         run: npx vite build
+      - name: Check the token can reach the account
+        if: steps.creds.outputs.ok == 'true'
+        # Lists the accounts this token can use, so a wrong CLOUDFLARE_ACCOUNT_ID
+        # (e.g. a zone ID) or a token scoped to another account is obvious.
+        run: |
+          npx wrangler whoami || true
+          if ! npx wrangler d1 info axal-mail >/dev/null 2>&1; then
+            echo "::error::The Cloudflare token can't open the axal-mail database in account $CLOUDFLARE_ACCOUNT_ID (Cloudflare code 7403). Set CLOUDFLARE_ACCOUNT_ID to the Account ID shown under Workers & Pages (not a Zone ID), and give the token Account → D1: Edit and Workers Scripts: Edit on that account, plus Zone → Workers Routes: Edit and DNS: Edit on axal.vc."
+            exit 1
+          fi
       - name: Apply database migrations
         if: steps.creds.outputs.ok == 'true'
         run: npx wrangler d1 migrations apply axal-mail --remote
       - name: Deploy Worker and assets
         if: steps.creds.outputs.ok == 'true'
-        run: npx wrangler deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}"
+        # Pass the client ID only when the repository sets it; an empty --var
+        # would replace the value configured on the Worker.
+        run: |
+          if [ -n "$GOOGLE_CLIENT_ID" ]; then
+            npx wrangler deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}"
+          else
+            npx wrangler deploy
+          fi
       - name: Set the assistant API key
         if: steps.creds.outputs.ok == 'true' && env.ANTHROPIC_API_KEY != ''
         run: printf '%s' "$ANTHROPIC_API_KEY" | npx wrangler secret put ANTHROPIC_API_KEY
