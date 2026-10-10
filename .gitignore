@@ -5,3 +5,5 @@ dist
 *.log
 coverage
 test-results
+.wrangler
+.dev.vars

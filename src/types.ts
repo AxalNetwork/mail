@@ -178,6 +178,8 @@ export interface ReplyContext {
   threadId: string;
   messageIdHeader?: string;
   references?: string;
+  /** Message-ID of the conversation's first message; keys shared internal notes. */
+  rootId?: string;
 }
 
 /** Everything a provider needs to send or store a message. */

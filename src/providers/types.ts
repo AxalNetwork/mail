@@ -18,6 +18,8 @@ export interface Capabilities {
   bulkSpacingMs: number;
   /** Messages are recorded locally and never delivered. */
   demo: boolean;
+  /** Internal notes are shared with the team (otherwise kept on this device). */
+  sharedNotes: boolean;
 }
 
 export interface ListQuery {

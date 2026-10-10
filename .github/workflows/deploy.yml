@@ -1,0 +1,78 @@
+name: Test and deploy
+
+# Every push is tested. Pushes to the default branch are deployed to
+# Cloudflare (frontend + API on https://mail.axal.vc) once the repository has
+# the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx vite build
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+    steps:
+      - name: Check Cloudflare credentials
+        id: creds
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to deploy."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.creds.outputs.ok == 'true'
+        uses: actions/checkout@v4
+      - if: steps.creds.outputs.ok == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.creds.outputs.ok == 'true'
+        run: npm ci
+      - if: steps.creds.outputs.ok == 'true'
+        run: npx vite build
+      - name: Apply database migrations
+        if: steps.creds.outputs.ok == 'true'
+        run: npx wrangler d1 migrations apply axal-mail --remote
+      - name: Deploy Worker and assets
+        if: steps.creds.outputs.ok == 'true'
+        run: npx wrangler deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}"
+      - name: Set the assistant API key
+        if: steps.creds.outputs.ok == 'true' && env.ANTHROPIC_API_KEY != ''
+        run: printf '%s' "$ANTHROPIC_API_KEY" | npx wrangler secret put ANTHROPIC_API_KEY
+      - name: Smoke test
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS https://mail.axal.vc/api/health; then exit 0; fi
+            sleep 10
+          done
+          echo "::warning::https://mail.axal.vc is not answering yet (DNS or certificate may still be provisioning)."

@@ -462,7 +462,7 @@ export function Composer(p: Props) {
           <div className="note-box">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <span className="mono-label">Internal note</span>
-              <span>{caps.demo ? 'Saved to the thread for the Axal team. Never included in the email.' : 'Saved with the conversation on this device. Never included in the email.'}</span>
+              <span>{caps.sharedNotes ? 'Saved to the thread for the Axal team. Never included in the email.' : 'Saved with the conversation on this device. Never included in the email.'}</span>
             </div>
             <textarea rows={2} value={c.note} aria-label="Internal note" placeholder="e.g. Priya to join the Thursday call" onChange={e => patch({ note: e.target.value })} />
           </div>

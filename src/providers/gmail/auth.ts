@@ -20,6 +20,18 @@ export const SCOPES = [
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const STORE_KEY = 'axal.gmail.token';
 const HINT_KEY = 'axal.gmail.hint';
+const SESSION_KEY = 'axal.session.start';
+/** Sign-in lasts at most this long; then the user signs in again. */
+export const SESSION_MS = 12 * 60 * 60 * 1000;
+
+export type SessionEnd = 'expired' | 'lost';
+
+export interface SignInOptions {
+  /** Address to prefill in Google's sign-in ("Continue" with an Axal VC email). */
+  hint?: string;
+  /** Show Google's account chooser ("Continue with Google"). */
+  selectAccount?: boolean;
+}
 
 interface TokenResponse {
   access_token?: string;
@@ -46,6 +58,13 @@ interface GoogleOAuth2 {
 declare global {
   interface Window {
     google?: { accounts: { oauth2: GoogleOAuth2 } };
+  }
+}
+
+/** A failure reported by Google's sign-in popup; `type` is e.g. popup_closed or popup_failed_to_open. */
+export class GoogleSignInError extends Error {
+  constructor(readonly type: string, message: string) {
+    super(message);
   }
 }
 
@@ -76,8 +95,8 @@ export class GoogleAuth {
   private current: StoredToken | null = null;
   private pending: { resolve: (t: string) => void; reject: (e: Error) => void } | null = null;
   private inflight: Promise<string> | null = null;
-  /** Called when a silent token refresh fails and the user has to sign in again. */
-  onSessionLost: (() => void) | null = null;
+  /** Called when the session ends (12-hour limit, or a refresh Google refused) and the user must sign in again. */
+  onSessionLost: ((why: SessionEnd) => void) | null = null;
 
   constructor(private clientId: string) {
     try {
@@ -86,9 +105,19 @@ export class GoogleAuth {
     } catch { /* storage unavailable */ }
   }
 
-  /** A stored token that is still valid for at least a minute. */
+  /** A stored token that is still valid for at least a minute, within an unexpired session. */
   hasValidToken(): boolean {
-    return !!this.current && this.current.expiresAt - Date.now() > 60_000;
+    return !!this.current && this.current.expiresAt - Date.now() > 60_000 && !this.sessionExpired();
+  }
+
+  private get sessionStart(): number {
+    try { return Number(localStorage.getItem(SESSION_KEY) || 0); } catch { return 0; }
+  }
+
+  /** The 12-hour session limit has passed since the last interactive sign-in. */
+  sessionExpired(now = Date.now()): boolean {
+    const start = this.sessionStart;
+    return !!start && now - start > SESSION_MS;
   }
 
   /** Address used last time, offered as "Continue as …". */
@@ -110,13 +139,21 @@ export class GoogleAuth {
           const p = this.pending; this.pending = null;
           if (!p) return;
           if (r.error || !r.access_token) return p.reject(new Error(r.error_description || r.error || 'Google sign-in failed'));
+          // Google lets people untick permissions on the consent screen; Mail cannot work without Gmail access.
+          const granted = (r.scope || '').split(' ');
+          if (r.scope && !granted.includes('https://www.googleapis.com/auth/gmail.modify')) {
+            window.google?.accounts.oauth2.revoke(r.access_token);
+            return p.reject(new Error('Allow Axal VC Mail to read, organize and send your Gmail to continue.'));
+          }
           this.current = { token: r.access_token, expiresAt: Date.now() + Number(r.expires_in || 3600) * 1000 };
           try { sessionStorage.setItem(STORE_KEY, JSON.stringify(this.current)); } catch { /* ignore */ }
           p.resolve(r.access_token);
         },
         error_callback: (e) => {
           const p = this.pending; this.pending = null;
-          p?.reject(new Error(e.type === 'popup_closed' ? 'Sign-in window was closed.' : e.message || 'Google sign-in failed'));
+          p?.reject(new GoogleSignInError(e.type, e.type === 'popup_closed' ? 'Sign-in window was closed.'
+            : e.type === 'popup_failed_to_open' ? 'The Google sign-in window was blocked. Allow pop-ups for this site and try again.'
+            : e.message || 'Google sign-in failed'));
         }
       });
     }
@@ -127,17 +164,26 @@ export class GoogleAuth {
    * Interactive sign-in. Must be called from a click handler so the browser
    * allows the consent popup.
    */
-  async signIn(): Promise<string> {
-    return this.request(this.loginHint ? '' : 'consent');
+  async signIn(o: SignInOptions = {}): Promise<string> {
+    // A fresh interactive sign-in replaces any token from an earlier account.
+    this.invalidate();
+    const token = await this.request(o.selectAccount ? 'select_account' : '', o.hint ?? this.loginHint);
+    try { localStorage.setItem(SESSION_KEY, String(Date.now())); } catch { /* ignore */ }
+    return token;
   }
 
-  private request(prompt: string): Promise<string> {
+  /** The current token, if any (no refresh). */
+  get accessToken(): string | null {
+    return this.hasValidToken() ? this.current!.token : null;
+  }
+
+  private request(prompt: string, hint = this.loginHint): Promise<string> {
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       const client = await this.ensureClient();
       return new Promise<string>((resolve, reject) => {
         this.pending = { resolve, reject };
-        client.requestAccessToken({ prompt, login_hint: this.loginHint || undefined });
+        client.requestAccessToken({ prompt, login_hint: hint || undefined });
       });
     })().finally(() => { this.inflight = null; });
     return this.inflight;
@@ -145,12 +191,17 @@ export class GoogleAuth {
 
   /** A valid access token, refreshing silently when it is about to expire. */
   async token(): Promise<string> {
+    if (this.sessionExpired()) {
+      this.invalidate();
+      this.onSessionLost?.('expired');
+      throw new Error('Your session ended. Sign in again.');
+    }
     if (this.hasValidToken()) return this.current!.token;
     try {
       return await this.request('');
     } catch (e) {
       // Outside a click the browser may block the refresh popup; ask the user to continue.
-      this.onSessionLost?.();
+      this.onSessionLost?.('lost');
       throw e;
     }
   }
@@ -164,7 +215,7 @@ export class GoogleAuth {
   signOut() {
     const t = this.current?.token;
     this.invalidate();
-    try { localStorage.removeItem(HINT_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(HINT_KEY); localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
     if (t && window.google?.accounts?.oauth2) window.google.accounts.oauth2.revoke(t);
   }
 }

@@ -20,7 +20,7 @@ export class DemoProvider implements MailProvider {
   readonly kind = 'demo' as const;
   readonly orgDomain = ORG_DOMAIN;
   readonly capabilities: Capabilities = {
-    snooze: true, schedule: true, documents: true, mailboxSwitch: true, installSignature: false, bulkSpacingMs: 0, demo: true
+    snooze: true, schedule: true, documents: true, mailboxSwitch: true, installSignature: false, bulkSpacingMs: 0, demo: true, sharedNotes: true
   };
 
   private threads: DemoThread[] = clone(THREADS);

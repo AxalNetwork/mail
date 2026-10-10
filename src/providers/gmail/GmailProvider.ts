@@ -8,9 +8,10 @@ import { GoogleClient, mapLimit } from './client';
 import { header, messageBodies, toMessage, toSummary, type GmailLabel, type GmailMessage, type GmailThread } from './parse';
 import { base64ToBytes, buildMime, type MimeAttachment } from '../../lib/mime';
 import { orgDomainFor, parseAddressList } from '../../lib/compose';
-import { clockTime, fileExt, plural } from '../../lib/format';
+import { fileExt, plural } from '../../lib/format';
 import { textToHtml } from '../../lib/html';
 import { extractBody } from '../../lib/outgoing';
+import { LocalNotes, type NotesStore } from './notes';
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const UPLOAD = 'https://gmail.googleapis.com/upload/gmail/v1/users/me';
@@ -38,7 +39,6 @@ interface PersonResource {
   locations?: { value?: string }[];
 }
 
-const NOTES_KEY = 'axal.notes';
 const PROFILE_KEY = 'axal.profile.';
 
 function readJson<T>(key: string, fallback: T): T {
@@ -60,7 +60,7 @@ export class GmailProvider implements MailProvider {
   readonly capabilities: Capabilities = {
     snooze: false, schedule: false, documents: false, mailboxSwitch: false, installSignature: true,
     // Spread bulk sends out (≈30/min) to stay well inside Gmail sending limits.
-    bulkSpacingMs: 2000, demo: false
+    bulkSpacingMs: 2000, demo: false, sharedNotes: false
   };
   orgDomain = '';
 
@@ -71,9 +71,10 @@ export class GmailProvider implements MailProvider {
   private sendAsCache: SendAs[] | null = null;
   private contactsWarm = false;
 
-  constructor(readonly auth: GoogleAuth, orgDomainOverride = '') {
+  constructor(readonly auth: GoogleAuth, orgDomainOverride = '', private notes: NotesStore = new LocalNotes()) {
     this.api = new GoogleClient(auth);
     this.orgDomain = orgDomainOverride;
+    this.capabilities.sharedNotes = notes.shared;
   }
 
   // ---------- account & settings ----------
@@ -246,7 +247,8 @@ export class GmailProvider implements MailProvider {
     const now = new Date();
     const s = toSummary(t, { me: a.email, labelNames: this.labelNames, now });
     const messages = (t.messages || []).filter(m => !(m.labelIds || []).includes('DRAFT')).map(m => toMessage(m, now));
-    const notes = readJson<Record<string, ActivityEvent[]>>(NOTES_KEY, {})[id] || [];
+    const rootKey = messages[0]?.messageIdHeader;
+    const notes = rootKey ? await this.notes.list(rootKey).catch((): ActivityEvent[] => []) : [];
     const n = messages.length;
     const fromLine = s.outgoing ? 'Sent from ' + a.email : 'From ' + (s.email ? s.from.replace(/ \(\d+\)$/, '') + ' <' + s.email + '>' : s.from);
     return {
@@ -353,11 +355,17 @@ export class GmailProvider implements MailProvider {
     });
   }
 
-  private saveNote(threadId: string, note?: string) {
-    if (!note?.trim()) return;
-    const all = readJson<Record<string, ActivityEvent[]>>(NOTES_KEY, {});
-    all[threadId] = [...(all[threadId] || []), { text: 'Internal note (this device): ' + note.trim(), time: clockTime() }];
-    writeJson(NOTES_KEY, all);
+  /** The Message-ID Gmail assigned to a message we just sent. */
+  private async messageIdOf(id: string): Promise<string | undefined> {
+    const m = await this.api.request<GmailMessage>(API + '/messages/' + id, { query: { format: 'metadata', metadataHeaders: ['Message-ID'] } });
+    return header(m, 'Message-ID') || undefined;
+  }
+
+  private async saveNote(msg: OutgoingMessage, sentId: string) {
+    const text = msg.note?.trim();
+    if (!text) return;
+    const key = msg.reply?.rootId || msg.reply?.messageIdHeader || (await this.messageIdOf(sentId));
+    if (key) await this.notes.add(key, text, (await this.account()).name);
   }
 
   async saveDraft(msg: OutgoingMessage): Promise<SavedDraft> {
@@ -380,7 +388,8 @@ export class GmailProvider implements MailProvider {
       r = await this.upload(
         '/messages/send', 'POST', msg.reply ? { threadId: msg.reply.threadId } : {}, await this.raw(msg));
     }
-    this.saveNote(r.threadId, msg.note);
+    // The email is already sent; a failed note must not report the send as failed.
+    await this.saveNote(msg, r.id).catch(e => console.warn('Internal note not saved', e));
     return { id: r.id, threadId: r.threadId };
   }
 
@@ -406,7 +415,7 @@ export class GmailProvider implements MailProvider {
       subject: header(m, 'Subject'),
       html: b.html ? extractBody(b.html) : textToHtml(b.text),
       attachments,
-      reply: inReplyTo ? { threadId: m.threadId, messageIdHeader: inReplyTo, references: refs.filter(x => x !== inReplyTo).join(' ') || undefined } : undefined,
+      reply: inReplyTo ? { threadId: m.threadId, messageIdHeader: inReplyTo, references: refs.filter(x => x !== inReplyTo).join(' ') || undefined, rootId: refs[0] || inReplyTo } : undefined,
       priority
     };
   }

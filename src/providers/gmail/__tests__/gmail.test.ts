@@ -132,7 +132,7 @@ describe('GmailProvider', () => {
     expect(c.body).toContain('Content-Type: message/rfc822');
     expect(c.body).toContain('In-Reply-To: <id1@x>');
     expect(c.body).toContain('filename="n.txt"');
-    expect(JSON.parse(localStorage.getItem('axal.notes')!).t1[0].text).toContain('Priya joins Thursday');
+    expect(JSON.parse(localStorage.getItem('axal.notes')!)['<id1@x>'][0].text).toContain('Priya joins Thursday');
   });
 
   it('creates a draft, updates it in place, then sends the draft', async () => {

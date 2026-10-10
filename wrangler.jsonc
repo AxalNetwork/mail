@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "axal-mail",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Frontend: the Vite build. Cloudflare serves these files directly; only
+  // /api/* runs the Worker. Unknown paths fall back to index.html (SPA).
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // Creates the mail.axal.vc DNS record and certificate on deploy.
+  // Requires the axal.vc zone to be in this Cloudflare account.
+  "routes": [{ "pattern": "mail.axal.vc", "custom_domain": true }],
+  "workers_dev": false,
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "axal-mail",
+      "database_id": "e7e9fb33-b869-4dae-9a3c-176c611a9591",
+      "migrations_dir": "worker/migrations"
+    }
+  ],
+
+  "vars": {
+    // Public OAuth Web client ID. Set here, or pass --var GOOGLE_CLIENT_ID:… at deploy.
+    "GOOGLE_CLIENT_ID": "",
+    "ALLOWED_DOMAINS": "axal.vc",
+    "ORG_DOMAIN": "axal.vc"
+  },
+  // Secrets (wrangler secret put): ANTHROPIC_API_KEY
+
+  "observability": { "enabled": true }
+}

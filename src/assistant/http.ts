@@ -1,6 +1,7 @@
 import type { AiInsight, Thread } from '../types';
 import type { PersonaKey, PersonaMessage } from '../lib/bulk';
 import type { Assistant, AiResult, DraftRequest, RewriteMode } from './types';
+import { htmlToText } from '../lib/html';
 
 /**
  * Client for an assistant backend. The backend owns the model and its policy
@@ -8,7 +9,7 @@ import type { Assistant, AiResult, DraftRequest, RewriteMode } from './types';
  *
  *   POST {base}/insight  { thread }                         → AiInsight | null
  *   POST {base}/draft    { thread, instruction, recipientFirstName } → AiResult
- *   POST {base}/rewrite  { html, mode, thread }             → AiResult
+ *   POST {base}/rewrite  { text, mode, thread }             → AiResult
  *   POST {base}/persona  { persona, tone, brief }           → { subject, body }
  *
  * The caller's Google access token is forwarded as a Bearer token so the
@@ -27,7 +28,10 @@ export class HttpAssistant implements Assistant {
       headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: 'Bearer ' + tok } : {}) },
       body: JSON.stringify(body)
     });
-    if (!res.ok) throw new Error('Assistant request failed (' + res.status + ')');
+    if (!res.ok) {
+      const j = await res.json().catch(() => null) as { error?: string } | null;
+      throw new Error(j?.error || 'Assistant request failed (' + res.status + ')');
+    }
     return res.json() as Promise<T>;
   }
 
@@ -42,6 +46,6 @@ export class HttpAssistant implements Assistant {
 
   insight(thread: Thread) { return this.post<AiInsight | null>('/insight', { thread: this.slim(thread) }); }
   draft(req: DraftRequest) { return this.post<AiResult>('/draft', { ...req, thread: this.slim(req.thread) }); }
-  rewrite(html: string, mode: RewriteMode, thread: Thread | null) { return this.post<AiResult>('/rewrite', { html, mode, thread: this.slim(thread) }); }
+  rewrite(html: string, mode: RewriteMode, thread: Thread | null) { return this.post<AiResult>('/rewrite', { text: htmlToText(html), mode, thread: this.slim(thread) }); }
   writePersona(persona: PersonaKey, tone: string, brief: string) { return this.post<PersonaMessage>('/persona', { persona, tone, brief }); }
 }

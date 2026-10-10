@@ -210,7 +210,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut }: Props)
       const draft = o.ai && insight?.id === t.id ? insight.data?.draft : undefined;
       setCompose(newCompose({
         mode: 'reply', fromId, to, cc, showCc: cc.length > 0, subject: replySubject(t.subject), context: t,
-        reply: { threadId: t.id, messageIdHeader: incoming.messageIdHeader, references: incoming.references },
+        reply: { threadId: t.id, messageIdHeader: incoming.messageIdHeader, references: incoming.references, rootId: msgs[0]?.messageIdHeader },
         quote: { who: incoming.from, time: incoming.time, text: incoming.text },
         html: draft || '', aiBar: !!o.ai,
         aiNote: draft ? { title: 'AI draft.', text: 'Based on this thread only. Review before sending.' } : null
