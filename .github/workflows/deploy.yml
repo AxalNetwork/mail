@@ -65,7 +65,9 @@ jobs:
         # (e.g. a zone ID) or a token scoped to another account is obvious.
         run: |
           npx wrangler whoami || true
-          if ! npx wrangler d1 info axal-mail >/dev/null 2>&1; then
+          echo "D1 databases this token can see:"
+          npx wrangler d1 list || true
+          if ! npx wrangler d1 info axal-mail; then
             echo "::error::The Cloudflare token can't open the axal-mail database in account $CLOUDFLARE_ACCOUNT_ID (Cloudflare code 7403). Set CLOUDFLARE_ACCOUNT_ID to the Account ID shown under Workers & Pages (not a Zone ID), and give the token Account → D1: Edit and Workers Scripts: Edit on that account, plus Zone → Workers Routes: Edit and DNS: Edit on axal.vc."
             exit 1
           fi
