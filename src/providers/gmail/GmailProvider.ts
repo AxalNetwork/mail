@@ -1,6 +1,6 @@
 import type { Capabilities, FolderCounts, ListPage, ListQuery, MailProvider } from '../types';
 import type {
-  Account, ActivityEvent, Category, ComposeAttachment, Contact, DraftContent, Identity, OutgoingMessage, Person,
+  Account, ActivityEvent, ConversationSample, ConvMessage, Category, ComposeAttachment, Contact, DraftContent, Identity, OutgoingMessage, Person,
   Priority, Profile, SavedDraft, SentResult, Thread, ThreadSummary
 } from '../../types';
 import { GoogleAuth } from './auth';
@@ -19,6 +19,16 @@ const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const PAGE_SIZE = 25;
 const PRIMARY_QUERY = '-category:social -category:promotions -category:updates -category:forums';
 const METADATA_HEADERS = ['From', 'To', 'Subject', 'Date', 'Content-Type'];
+const ANALYTICS_HEADERS = ['From', 'To', 'Cc', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
+
+/** Bulk or machine-sent mail, which nobody expects an answer to. */
+function isAutomated(m: GmailMessage, from: string): boolean {
+  if (header(m, 'List-Unsubscribe') || header(m, 'List-Id')) return true;
+  if (/^(bulk|list|junk)$/i.test(header(m, 'Precedence'))) return true;
+  const auto = header(m, 'Auto-Submitted');
+  if (auto && !/^no$/i.test(auto)) return true;
+  return /^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster)@/i.test(from);
+}
 
 interface SendAs {
   sendAsEmail: string;
@@ -253,6 +263,43 @@ export class GmailProvider implements MailProvider {
     return {
       threads: threads.map(t => toSummary(t, { me: a.email, labelNames: this.labelNames, now })),
       nextPageToken: r.nextPageToken
+    };
+  }
+
+  async conversations(days: number, cap = 300): Promise<ConversationSample> {
+    const a = await this.account();
+    let mine = [a.email.toLowerCase(), ...(this.mailbox ? [this.mailbox] : [])];
+    try { mine = [...mine, ...(await this.sendAs()).map(s => s.sendAsEmail.toLowerCase())]; } catch { /* primary only */ }
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const r = await this.api.request<{ threads?: { id: string }[]; nextPageToken?: string }>(this.gmail + '/threads', {
+        query: { q: 'newer_than:' + days + 'd -in:chats -in:spam -in:trash', maxResults: Math.min(100, cap - ids.length), pageToken }
+      });
+      ids.push(...(r.threads || []).map(t => t.id));
+      pageToken = r.nextPageToken;
+    } while (pageToken && ids.length < cap);
+    const threads = await mapLimit(ids, 8, id => this.api.request<GmailThread>(this.gmail + '/threads/' + id, {
+      query: { format: 'metadata', metadataHeaders: ANALYTICS_HEADERS }
+    }));
+    return {
+      truncated: !!pageToken,
+      conversations: threads.map(t => ({
+        id: t.id,
+        subject: header(t.messages?.[0], 'Subject') || '(no subject)',
+        messages: (t.messages || []).map((m): ConvMessage => {
+          const sender = parseAddressList(header(m, 'From'))[0];
+          const email = (sender?.email || '').toLowerCase();
+          return {
+            from: email,
+            fromName: sender?.name || email,
+            fromMe: mine.includes(email),
+            to: parseAddressList([header(m, 'To'), header(m, 'Cc')].filter(Boolean).join(', ')).map(p => p.email.toLowerCase()).filter(e => e && !mine.includes(e)),
+            at: Number(m.internalDate || 0),
+            automated: isAutomated(m, email)
+          };
+        })
+      }))
     };
   }
 

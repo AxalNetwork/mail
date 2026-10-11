@@ -1,5 +1,5 @@
 import type {
-  Account, Category, Contact, DocumentRef, DraftContent, Folder, Identity, Mailbox,
+  Account, ConversationSample, Category, Contact, DocumentRef, DraftContent, Folder, Identity, Mailbox,
   OutgoingMessage, Profile, SavedDraft, Schedule, SentResult, Thread, ThreadSummary
 } from '../types';
 
@@ -58,6 +58,8 @@ export interface MailProvider {
   scheduleOptions(): Schedule[];
 
   listThreads(q: ListQuery): Promise<ListPage>;
+  /** Conversation metadata (senders, recipients, times; no content) for analytics. */
+  conversations(days: number, cap?: number): Promise<ConversationSample>;
   getThread(id: string): Promise<Thread>;
 
   markRead(id: string, read: boolean): Promise<void>;

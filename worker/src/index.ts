@@ -7,6 +7,7 @@ import * as admin from './admin';
 import * as mailboxes from './mailboxes';
 import { googleClientId } from './config';
 import { bugReportsEnabled, fileBugReport } from './bugs';
+import { deliverability } from './deliverability';
 
 export type { Env };
 
@@ -66,6 +67,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === 'POST') return json({ note: await addNote(env.DB, user, await readJson(req)) }, 201);
   }
 
+  if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
   if (path === '/api/mailboxes' && method === 'GET') return mailboxes.listForUser(env, user);

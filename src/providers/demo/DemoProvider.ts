@@ -1,5 +1,5 @@
 import type { Capabilities, FolderCounts, ListPage, ListQuery, MailProvider } from '../types';
-import type { Account, Contact, DraftContent, Message, OutgoingMessage, Profile, SavedDraft, SentResult, Thread } from '../../types';
+import type { Account, Contact, ConversationSample, ConvMessage, DraftContent, Message, OutgoingMessage, Profile, SavedDraft, SentResult, Thread } from '../../types';
 import { clockTime } from '../../lib/format';
 import { htmlToText } from '../../lib/html';
 import { extractBody } from '../../lib/outgoing';
@@ -54,6 +54,36 @@ export class DemoProvider implements MailProvider {
   }
 
   private open() { return this.threads.filter(t => !t.archived && !t.snoozed); }
+
+  /** Fictional, but stable: a seeded mix of conversations over the last 90 days. */
+  async conversations(days: number): Promise<ConversationSample> {
+    const me = (await this.account()).email;
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+    const now = Date.now();
+    const H = 3_600_000;
+    const people = CONTACTS.filter(c => c.email && c.email !== me);
+    const conversations = Array.from({ length: 140 }, (_, i) => {
+      const p = people[i % people.length];
+      const automated = i % 7 === 6;
+      let at = now - rnd() * 90 * 24 * H;
+      // Office hours, mostly.
+      const d = new Date(at); d.setHours(8 + Math.floor(rnd() * 10), Math.floor(rnd() * 60)); at = Math.min(d.getTime(), now - H);
+      const messages: ConvMessage[] = [];
+      let fromMe = !automated && rnd() < 0.45;
+      const turns = automated ? 1 : 1 + Math.floor(rnd() * 4);
+      for (let k = 0; k < turns && at < now; k++) {
+        messages.push(fromMe
+          ? { from: me, fromName: 'You', fromMe: true, to: [p.email], at, automated: false }
+          : { from: automated ? 'notifications@carta.example' : p.email, fromName: automated ? 'Carta' : p.name, fromMe: false, to: [], at, automated });
+        fromMe = !fromMe;
+        at += (0.3 + rnd() * (rnd() < 0.2 ? 90 : 14)) * H;
+      }
+      const t = THREADS[i % THREADS.length];
+      return { id: t.id, subject: t.subject, messages };
+    }).filter(c => c.messages.some(m => m.at >= now - days * 24 * H));
+    return { conversations, truncated: false };
+  }
 
   async listThreads(q: ListQuery): Promise<ListPage> {
     const cat = q.category || 'Primary';

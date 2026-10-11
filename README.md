@@ -133,6 +133,12 @@ UPDATE members SET status = 'suspended' WHERE email = 'julian@axal.vc';
 
 A suspension applies to new sign-ins at once, and to open sessions within 5 minutes.
 
+## Analytics and AI Automations
+
+**Analytics** (Workspace → Analytics) reads the metadata of your recent conversations (senders, recipients, times and bulk-mail headers; never bodies) straight from Gmail into the browser, for 7, 30 or 90 days (up to 300 or 500 conversations), and computes everything there. Nothing is stored. It shows volume per day, your and their median response times, message and contact reply rates, who is waiting on whom, sending hours and top contacts, with the definitions on each tile. A **Deliverability** panel checks the domain's MX, SPF, DKIM (Google selector) and DMARC records through the Worker (`GET /api/analytics/deliverability`, organization domains only). Opens, clicks, bounces and inbox placement aren't measured: a mailbox can't see them, and tracking pixels or links would need recipients' consent.
+
+**AI Automations** turns the same data into work to approve: a daily briefing, a follow-up agent (you wrote last, 3+ days ago) and a reply queue, each with *Draft* buttons that open the composer with an assistant draft. Nothing is sent automatically. Inbox management, CRM sync, outreach sequences, scheduling, support and document processing are listed with what each needs first.
+
 ## Bug reports
 
 *Report a bug* in the account menu files a GitHub issue (label `bug`) through the Worker. The repository is public, so the form says so, the issue never names the reporter, and email addresses are removed from everything it sends. Who filed which issue is kept in D1 (`bug_reports`) for admins. The optional technical details are the screen, path, build, browser, window size and the last few app errors. Each member can file 5 reports an hour.
@@ -154,6 +160,7 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/assistant/rewrite` | `shorter`, `formal`, `warmer`, `clarity`, `translate` (French) |
 | `POST /api/assistant/persona` | Bulk email subject and body for one persona, with merge tokens |
 | `POST /api/bug-report` | File a bug report as a GitHub issue |
+| `GET /api/analytics/deliverability` | MX, SPF, DKIM and DMARC checks for the organization domain |
 | `GET /api/mailboxes` | Shared mailboxes this member may open |
 | `/api/mailboxes/<mailbox>/(upload/)gmail/v1/users/me/…` | Gmail API for a shared mailbox, limited to what the mail client uses |
 | `GET/POST /api/admin/members` · `POST/DELETE /api/admin/links` | Members, roles, status and linked accounts (admins) |

@@ -225,3 +225,30 @@ export interface DraftContent {
   note?: string;
   priority?: Priority;
 }
+
+/** One message of a conversation, as analytics sees it: who, when, never content. */
+export interface ConvMessage {
+  /** Sender address, lowercased. */
+  from: string;
+  fromName: string;
+  /** Sent by the signed-in user (any of their send-as addresses). */
+  fromMe: boolean;
+  /** Recipient addresses (To + Cc), lowercased. */
+  to: string[];
+  /** Epoch ms. */
+  at: number;
+  /** Bulk mail: List-Unsubscribe / List-Id / Precedence: bulk, or a no-reply sender. */
+  automated: boolean;
+}
+
+export interface ConversationStat {
+  id: string;
+  subject: string;
+  messages: ConvMessage[];
+}
+
+export interface ConversationSample {
+  conversations: ConversationStat[];
+  /** The sample stopped at the cap: older conversations in the period are not included. */
+  truncated: boolean;
+}

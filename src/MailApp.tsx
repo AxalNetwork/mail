@@ -14,6 +14,8 @@ import { SignatureAdmin } from './components/admin/SignatureAdmin';
 import { MembersAdmin } from './components/admin/MembersAdmin';
 import { ROLE_LABEL, type AdminApi, type Role } from './admin/api';
 import { BugReportDialog } from './components/BugReportDialog';
+import { Analytics, type Deliverability } from './components/analytics/Analytics';
+import { Automations } from './components/automations/Automations';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
@@ -37,6 +39,8 @@ interface Props {
   onSwitchMailbox?: (addr: string, own: string) => void;
   /** Files a bug report as a GitHub issue; absent when the backend has none set up. */
   reportBug?: ReportBug | null;
+  /** DNS sender-authentication check for the organization's domain (backend). */
+  deliverability?: Deliverability | null;
 }
 
 interface ListState {
@@ -54,7 +58,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability }: Props) {
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -392,7 +396,16 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           )}
           {view === 'admin' && <SignatureAdmin provider={provider} onProfileChanged={load} />}
           {view === 'members' && <MembersAdmin api={admin || null} role={role || 'member'} demo={demo} />}
-          {!isList && view !== 'bulk' && view !== 'admin' && view !== 'members' && (
+          {view === 'analytics' && (
+            <Analytics provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''}
+              deliverability={deliverability} onOpen={id => go('inbox', id)} />
+          )}
+          {view === 'automations' && (
+            <Automations provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''} aiReady={assistant.live}
+              onOpen={id => go('inbox', id)} onGo={go}
+              onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))} />
+          )}
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

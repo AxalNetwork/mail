@@ -61,6 +61,17 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
       if (url.pathname.endsWith('/profile')) return Response.json({ emailAddress: (req.headers.get('Authorization') || '').replace('Bearer dwd:', '') });
       return Response.json({ ok: true });
     }
+    if (url.hostname === 'cloudflare-dns.com') {
+      const name = url.searchParams.get('name');
+      const type = url.searchParams.get('type');
+      const records: Record<string, { type: number; data: string }[]> = {
+        'axal.vc/MX': [{ type: 15, data: '1 smtp.google.com.' }],
+        'axal.vc/TXT': [{ type: 16, data: '"v=spf1 include:_spf.google.com ~all"' }, { type: 16, data: '"google-site-verification=x"' }],
+        'google._domainkey.axal.vc/TXT': [{ type: 16, data: '"v=DKIM1; k=rsa; p=MIIBIjAN" "BgkqhkiG9w0"' }],
+        '_dmarc.axal.vc/TXT': [{ type: 16, data: '"v=DMARC1; p=none"' }]
+      };
+      return Response.json({ Answer: records[name + '/' + type] || [] });
+    }
     if (url.hostname === 'api.github.com') {
       const body = await req.json() as Record<string, unknown>;
       githubCalls.push({ url: url.pathname, auth: req.headers.get('Authorization'), body });
@@ -423,5 +434,18 @@ describe('bug reports', () => {
     expect((await post('/api/bug-report', 'good', { title: 'x' })).status).toBe(400);
     for (let i = 0; i < 4; i++) expect((await post('/api/bug-report', 'good', report)).status).toBe(201);
     expect((await post('/api/bug-report', 'good', report)).status).toBe(429);
+  });
+});
+
+describe('deliverability', () => {
+  it('grades SPF, DKIM, DMARC and MX for the organization domain only', async () => {
+    const r = await call('/api/analytics/deliverability', { token: 'good' });
+    expect(r.status).toBe(200);
+    const j = await r.json() as { domain: string; checks: { key: string; level: string; summary: string }[] };
+    expect(j.domain).toBe('axal.vc');
+    expect(Object.fromEntries(j.checks.map(c => [c.key, c.level]))).toEqual({ mx: 'good', spf: 'good', dkim: 'good', dmarc: 'warning' });
+    expect(j.checks.find(c => c.key === 'dmarc')!.summary).toContain('monitor only');
+    expect((await call('/api/analytics/deliverability?domain=evil.example', { token: 'good' })).status).toBe(400);
+    expect((await call('/api/analytics/deliverability')).status).toBe(401);
   });
 });

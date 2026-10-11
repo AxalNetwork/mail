@@ -150,6 +150,18 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.bugReportUrl]
   );
 
+  const deliverability = useMemo(
+    () => (mode === 'gmail' && auth && config.sessionUrl
+      ? async () => {
+        const res = await fetch('/api/analytics/deliverability', { headers: { Authorization: 'Bearer ' + (await auth.token()) } });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error((j as { error?: string }).error || 'Deliverability check failed (' + res.status + ')');
+        return j as Awaited<ReturnType<NonNullable<React.ComponentProps<typeof MailApp>['deliverability']>>>;
+      }
+      : null),
+    [mode, auth, config.sessionUrl]
+  );
+
   const signOut = () => {
     session?.provider.signOut?.();
     setReason('signed-out');
@@ -203,6 +215,7 @@ function Session({ config }: { config: AppConfig }) {
       role={mode === 'demo' ? 'super_admin' : role}
       admin={admin}
       reportBug={reportBug}
+      deliverability={deliverability}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
       onSignOut={signOut}
