@@ -22,7 +22,7 @@ import { HttpDismissals, type DismissalStore } from './lib/automationsApi';
 import { HttpContactsApi, type ContactsApi } from './lib/contactsApi';
 import { HttpSharedApi, type SharedApi } from './lib/sharedApi';
 import { HttpSnoozes, LocalSnoozes } from './lib/snooze';
-import { Documents, HttpDocuments } from './lib/documents';
+import { Documents, httpExtractor } from './lib/documents';
 import { Drive } from './lib/drive';
 import { DriveAuth } from './providers/gmail/driveAuth';
 
@@ -189,8 +189,8 @@ function Session({ config }: { config: AppConfig }) {
   const documents = useMemo(() => {
     if (mode !== 'gmail' || !auth || !config.sessionUrl || !config.googleClientId || !session) return null;
     const driveAuth = new DriveAuth(config.googleClientId, () => auth.loginHint);
-    return new Documents(new Drive(driveAuth), new HttpDocuments(() => auth.token()), driveAuth, () => session.provider.account().then(a => a.email));
-  }, [mode, auth, config.sessionUrl, config.googleClientId, session]);
+    return new Documents(new Drive(driveAuth), driveAuth, () => session.provider.account().then(a => a.email), config.assistantUrl ? httpExtractor(() => auth.token()) : undefined);
+  }, [mode, auth, config.sessionUrl, config.googleClientId, config.assistantUrl, session]);
 
   const outreach = useMemo(
     () => (mode === 'gmail' && auth && config.sessionUrl

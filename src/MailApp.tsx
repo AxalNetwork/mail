@@ -579,6 +579,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           onSent={onSent}
           onDraftsChanged={() => { refreshCounts(); if (view === 'drafts') setReloadTick(t => t + 1); }}
           onOpenDraft={id => openCompose({ draftId: id })}
+          documents={documents} onOpenDocuments={() => go('documents')}
         />
       )}
     </div>

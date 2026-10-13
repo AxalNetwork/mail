@@ -102,7 +102,7 @@ export function DocumentsPage({ docs, onOpenSource }: Props) {
             <button className="btn ghost sm" onClick={() => { docs.disconnect(); setState('disconnected'); }}>Disconnect</button>
           </span>
         </div>
-        <span className="faint" style={{ fontSize: 11.5 }}>Lists what is in Drive now; renames, moves and deletions made in Drive show up on refresh.</span>
+        <span className="faint" style={{ fontSize: 11.5 }}>Lists what is in Drive now; renames, moves and deletions made in Drive show up on refresh. To send one by email, use ▤ Document in the composer.</span>
       </div>
 
       <div className="row-wrap" style={{ alignItems: 'center' }}>

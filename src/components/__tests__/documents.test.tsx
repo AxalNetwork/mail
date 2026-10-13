@@ -52,7 +52,7 @@ describe('Documents page', () => {
     await u.selectOptions(screen.getByLabelText('Upload to'), 'Term Sheets');
     await u.upload(screen.getByLabelText('Upload a file'), new File(['terms'], 'Term sheet.txt', { type: 'text/plain' }));
     expect(await screen.findByText('Term sheet.txt')).toBeInTheDocument();
-    expect(f.backend.rows.find(r => r.name === 'Term sheet.txt')).toMatchObject({ category: 'Term Sheets' });
+    expect((await f.docs.list()).entries.find(e => e.file.name === 'Term sheet.txt')).toMatchObject({ category: 'Term Sheets' });
   });
 
   it('deletes only after confirmation, to Drive’s trash', async () => {
@@ -73,14 +73,13 @@ describe('Documents page', () => {
   it('shows extraction results with facts apart from interpretations', async () => {
     const u = userEvent.setup();
     const f = await connected();
-    f.backend.analyze = vi.fn(async id => Object.assign(f.backend.rows.find(r => r.id === id)!, {
-      extraction: { status: 'done' as const, at: Date.now(), result: {
-        summary: 'Northstar AI seed deck.', source: 'pdf' as const, missing: ['investment_term'],
-        items: [
-          { field: 'funding_requirement', value: '$4M seed', kind: 'stated' as const, page: 3, quote: 'raising $4M', quoteVerified: null },
-          { field: 'key_risk', value: 'Customer concentration', kind: 'interpretation' as const, page: null, quote: '', quoteVerified: false }
-        ] } }
-    }));
+    f.extract.mockResolvedValue({
+      summary: 'Northstar AI seed deck.', source: 'pdf', missing: ['investment_term'],
+      items: [
+        { field: 'funding_requirement', value: '$4M seed', kind: 'stated', page: 3, quote: 'raising $4M', quoteVerified: null },
+        { field: 'key_risk', value: 'Customer concentration', kind: 'interpretation', page: null, quote: '', quoteVerified: false }
+      ]
+    });
     render(<DocumentsPage docs={f.docs} onOpenSource={vi.fn()} />);
     await u.click(within(await screen.findByLabelText('Document list')).getByRole('button', { name: /Northstar deck\.pdf/ }));
     await u.click(screen.getByRole('button', { name: 'Analyze document' }));
@@ -136,5 +135,35 @@ describe('reader attachments', () => {
   it('offers nothing when Documents isn’t connected', () => {
     render(<ThreadReader {...base} thread={thread} documents={null} />);
     expect(screen.queryByRole('button', { name: /to Documents/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('attaching from Documents in the composer', () => {
+  it('lists Drive documents and attaches the real file', async () => {
+    const { createRef } = await import('react');
+    const { Composer } = await import('../composer/Composer');
+    const { newCompose } = await import('../composer/state');
+    const { ToastProvider } = await import('../Toast');
+    const { DemoProvider } = await import('../../providers/demo/DemoProvider');
+    const { DemoAssistant } = await import('../../assistant/demo');
+    const u = userEvent.setup();
+    const f = fakeDocuments();
+    await f.docs.connect();
+    await f.docs.upload(new Blob(['%PDF one-pager'], { type: 'application/pdf' }), 'Axal one-pager.pdf', 'One-pagers');
+    const provider = new DemoProvider();
+    const [account, identities] = await Promise.all([provider.account(), provider.identities()]);
+    const update = vi.fn();
+    const compose = newCompose({ fromId: identities[0].id, mode: 'new', to: [], subject: '', html: '' });
+    render(<ToastProvider><Composer compose={compose} update={update} provider={provider} assistant={new DemoAssistant()} account={account} identities={identities}
+      handleRef={createRef()} onClosed={vi.fn()} onSent={vi.fn()} onDraftsChanged={vi.fn()} onOpenDraft={vi.fn()} documents={f.docs} /></ToastProvider>);
+    await u.click(screen.getByRole('button', { name: '▤ Document' }));
+    const picker = await screen.findByRole('dialog', { name: 'Attach from Documents' });
+    await u.type(within(picker).getByLabelText('Search documents'), 'one-pager');
+    await u.click(await within(picker).findByRole('button', { name: /Axal one-pager\.pdf/ }));
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const patch = update.mock.calls.map(c => c[0]).find(p => typeof p === 'function');
+    const next = patch({ ...compose, attachments: [] });
+    expect(next.attachments[0]).toMatchObject({ name: 'Axal one-pager.pdf', mime: 'application/pdf', source: { kind: 'file' } });
+    expect(await (next.attachments[0].source.blob as Blob).text()).toBe('%PDF one-pager');
   });
 });
