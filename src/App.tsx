@@ -21,6 +21,7 @@ import { requestOfflineCode } from './providers/gmail/auth';
 import { HttpDismissals, type DismissalStore } from './lib/automationsApi';
 import { HttpContactsApi, type ContactsApi } from './lib/contactsApi';
 import { HttpSharedApi, type SharedApi } from './lib/sharedApi';
+import { HttpSnoozes, LocalSnoozes } from './lib/snooze';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -43,7 +44,8 @@ function gmailSession(auth: GoogleAuth, config: AppConfig, mailbox: string | nul
   const provider = new GmailProvider(auth, config.orgDomain, notes, {
     mailbox: mailbox || undefined,
     proxyBase: location.origin + '/api/mailboxes',
-    sharedMailboxes: () => sharedMailboxes(auth, config)
+    sharedMailboxes: () => sharedMailboxes(auth, config),
+    snoozes: config.sessionUrl ? new HttpSnoozes(() => auth.token()) : new LocalSnoozes()
   });
   const assistant = config.assistantUrl
     ? new HttpAssistant(config.assistantUrl, () => auth.token().catch(() => null))

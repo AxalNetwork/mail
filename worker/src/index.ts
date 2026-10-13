@@ -5,6 +5,7 @@ import * as notes from './notes';
 import * as automations from './automations';
 import * as contacts from './contacts';
 import * as shared from './shared';
+import * as snoozes from './snoozes';
 import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
@@ -33,11 +34,14 @@ export default {
     }
   },
 
-  /** Cron (wrangler.jsonc triggers): send the outreach sequence steps that are due. */
+  /** Cron (wrangler.jsonc triggers): send the outreach sequence steps that are due, and wake snoozed conversations. */
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(sequences.runDue(env).then(r => {
       if (r.sent || r.failed || r.paused) console.log('Outreach sequences:', JSON.stringify(r));
     }).catch(e => console.error('Outreach sequences run failed (is migration 0006 applied?)', e)));
+    ctx.waitUntil(snoozes.runSnoozes(env).then(r => {
+      if (r.woke) console.log('Snoozes woken:', r.woke);
+    }).catch(e => console.error('Snooze run failed (is migration 0011 applied?)', e)));
   }
 } satisfies ExportedHandler<Env>;
 
@@ -101,6 +105,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
+  if (path === '/api/snoozes') return snoozes.route(req, env, user, url);
   if (path === '/api/shared' || path.startsWith('/api/shared/')) return shared.route(req, env, user, url);
   if (path === '/api/mailboxes' && method === 'GET') return mailboxes.listForUser(env, user);
   if (path.startsWith('/api/mailboxes/')) return mailboxes.proxy(req, env, user, url);

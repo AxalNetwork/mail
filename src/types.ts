@@ -73,6 +73,8 @@ export interface ThreadSummary {
   outgoing?: boolean;
   /** Notifications and digests cannot be replied to. */
   noReply?: boolean;
+  /** Snoozed in Axal VC Mail until this time (epoch ms). */
+  snoozedUntil?: number;
 }
 
 export interface AiPoint {

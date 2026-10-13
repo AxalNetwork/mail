@@ -7,7 +7,7 @@ const REFRESH_MS = 20_000;
 const HEARTBEAT_MS = 45_000;
 
 type Members = { email: string; name: string }[];
-const nameOf = (members: Members, e: string | null) => (e ? members.find(m => m.email === e)?.name || e : '');
+const nameOf = (members: Members, e: string | null) => (e === 'axal-mail' ? 'Axal VC Mail' : e ? members.find(m => m.email === e)?.name || e : '');
 
 /**
  * Tells the team who has which conversation of a shared mailbox open. Replying
@@ -105,7 +105,7 @@ export function SharedBar({ api, mailbox, threadId, members }: Props) {
       {history && (
         <ul className="shared-history" aria-label="Assignment history">
           {data.activity.length ? data.activity.map((a, i) => (
-            <li key={i}><b>{nameOf(members, a.actor)}</b> {ACTION_TEXT[a.action](a.action === 'assigned' || a.action === 'unassigned' ? nameOf(members, a.detail) : a.detail)} · {ago(a.at, Date.now())}</li>
+            <li key={i}><b>{nameOf(members, a.actor)}</b> {(ACTION_TEXT[a.action] || (() => a.action))(a.action === 'assigned' || a.action === 'unassigned' ? nameOf(members, a.detail) : a.detail)} · {ago(a.at, Date.now())}</li>
           )) : <li className="faint">Nothing recorded yet.</li>}
         </ul>
       )}

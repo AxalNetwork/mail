@@ -1,5 +1,6 @@
 import { GmailProvider } from '../GmailProvider';
 import { ApiError } from '../client';
+import { LocalSnoozes } from '../../../lib/snooze';
 import type { GoogleAuth } from '../auth';
 import { toMessage, toSummary, type GmailMessage } from '../parse';
 import { base64Url } from '../../../lib/mime';
@@ -160,6 +161,77 @@ describe('GmailProvider', () => {
       .map(p => new TextDecoder().decode(Uint8Array.from(atob(p.split('\r\n--')[0].replace(/\r\n/g, '')), ch => ch.charCodeAt(0))));
     expect(parts.length).toBeGreaterThan(1);
     for (const p of [c.body as string, ...parts]) expect(p).not.toContain('Priya joins Thursday');
+  });
+
+  it('snoozes: records the wake-up first, then takes it out of the inbox under a Snoozed label', async () => {
+    const order: string[] = [];
+    const calls = mockFetch({
+      ...baseRoutes,
+      'POST /users/me/labels': () => { order.push('label'); return { id: 'Label_S', name: 'Snoozed', type: 'user' }; },
+      'GET /users/me/threads/t1': () => ({ id: 't1', messages: [{ id: 'm1' }, { id: 'm2' }] }),
+      'POST /threads/t1/modify': () => { order.push('modify'); return {}; }
+    });
+    const store = new LocalSnoozes();
+    const set = vi.spyOn(store, 'set').mockImplementation(async (...a) => { order.push('record'); return LocalSnoozes.prototype.set.apply(store, a); });
+    const g = new GmailProvider(fakeAuth(), '', undefined, { snoozes: store });
+    expect(g.capabilities.snooze).toBe(true);
+    expect(new GmailProvider(fakeAuth()).capabilities.snooze).toBe(false);
+    const until = Date.now() + 3_600_000;
+    expect(await g.snooze('t1', until)).toMatch(/:\d\d/);
+    expect(order).toEqual(['label', 'record', 'modify']);
+    expect(set).toHaveBeenCalledWith('julian@axal.vc', { threadId: 't1', until, labelId: 'Label_S', lastMessageId: 'm2' });
+    expect(JSON.parse(calls.find(c => c.url.pathname.endsWith('/modify'))!.body!)).toEqual({ addLabelIds: ['Label_S'], removeLabelIds: ['INBOX'] });
+    await expect(g.snooze('t1', Date.now() - 1)).rejects.toThrow(/future/);
+  });
+
+  it('wakes what is due or answered, and forgets what came back or was trashed elsewhere', async () => {
+    const store = new LocalSnoozes();
+    const future = Date.now() + 3_600_000;
+    for (const [id, until] of [['due', 1], ['answered', future], ['waiting', future], ['trashed', 1], ['back', future]] as const) {
+      await store.set('julian@axal.vc', { threadId: id, until, labelId: 'Label_S', lastMessageId: 'm1' });
+    }
+    const threads: Record<string, { id: string; labelIds: string[] }[]> = {
+      due: [{ id: 'm1', labelIds: ['Label_S'] }],
+      answered: [{ id: 'm1', labelIds: ['Label_S'] }, { id: 'm2', labelIds: ['Label_S', 'UNREAD'] }],
+      waiting: [{ id: 'm1', labelIds: ['Label_S'] }, { id: 'm2', labelIds: ['Label_S', 'SENT'] }],
+      trashed: [{ id: 'm1', labelIds: ['Label_S', 'TRASH'] }],
+      back: [{ id: 'm1', labelIds: ['INBOX', 'Label_S'] }]
+    };
+    const calls = mockFetch({
+      ...baseRoutes,
+      'GET /users/me/threads/due': () => ({ messages: threads.due }), 'GET /users/me/threads/answered': () => ({ messages: threads.answered }),
+      'GET /users/me/threads/waiting': () => ({ messages: threads.waiting }), 'GET /users/me/threads/trashed': () => ({ messages: threads.trashed }),
+      'GET /users/me/threads/back': () => ({ messages: threads.back }),
+      'POST /modify': () => ({})
+    });
+    const g = new GmailProvider(fakeAuth(), '', undefined, { snoozes: store });
+    expect(await g.wakeDue()).toBe(2);
+    const mods = calls.filter(c => c.url.pathname.endsWith('/modify')).map(c => [c.url.pathname.split('/').at(-2), JSON.parse(c.body!)]);
+    expect(mods).toEqual([
+      ['due', { addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: ['Label_S'] }],
+      ['answered', { addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: ['Label_S'] }]
+    ]);
+    expect((await store.list('julian@axal.vc')).map(s => s.threadId)).toEqual(['waiting']);
+    expect((await g.counts()).snoozed).toBe(1);
+  });
+
+  it('lists snoozed conversations with their wake-up time, and unsnoozes', async () => {
+    const store = new LocalSnoozes();
+    const until = Date.now() + 86_400_000;
+    await store.set('julian@axal.vc', { threadId: 't1', until, labelId: 'Label_S', lastMessageId: 'm1' });
+    const calls = mockFetch({
+      ...baseRoutes,
+      'GET /users/me/threads': () => ({ threads: [{ id: 't1' }] }),
+      'GET /users/me/threads/t1': () => ({ id: 't1', messages: [msg('m1', 'Maya <maya@n.example>', ['Label_S'])] }),
+      'POST /threads/t1/modify': () => ({})
+    });
+    const g = new GmailProvider(fakeAuth(), '', undefined, { snoozes: store });
+    const page = await g.listThreads({ folder: 'snoozed' });
+    expect(calls.find(c => c.url.pathname.endsWith('/threads'))!.url.searchParams.get('q')).toBe('in:snoozed OR label:snoozed');
+    expect(page.threads[0]).toMatchObject({ snoozedUntil: until, followup: expect.stringMatching(/^Until Tomorrow/) });
+    await g.unsnooze('t1');
+    expect(JSON.parse(calls.filter(c => c.url.pathname.endsWith('/modify')).at(-1)!.body!)).toEqual({ addLabelIds: ['INBOX'], removeLabelIds: ['Label_S'] });
+    expect(await store.list('julian@axal.vc')).toEqual([]);
   });
 
   it('in a shared mailbox, tells the Worker what the reply was based on, and surfaces its refusals', async () => {

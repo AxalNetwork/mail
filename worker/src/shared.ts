@@ -261,6 +261,7 @@ export async function recordReply(env: Env, user: User, mailbox: string, thread:
 
 // ---------- routing ----------
 
+// (shared_activity also records 'snoozed', 'unsnoozed' and 'woke' since migration 0011.)
 const ROUTE = /^\/api\/shared\/([^/]+)\/threads(?:\/([\w-]+)(?:\/(activity|presence))?)?$/;
 
 export async function route(req: Request, env: Env, user: User, url: URL): Promise<Response> {

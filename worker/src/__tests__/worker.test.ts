@@ -8,13 +8,14 @@ import { clearDelegationCache } from '../delegation';
 import { clearSenderCache } from '../senders';
 import { runDue } from '../sequences';
 import { clearSharedCache } from '../shared';
+import { runSnoozes, wakeReason } from '../snoozes';
 import { fromHeader } from '../mailboxes';
 import type { Env } from '../env';
 
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -1042,5 +1043,71 @@ describe('shared inboxes', () => {
     expect(fromHeader('Subject: x\r\nFrom: =?UTF-8?B?w4l0w6k=?=\r\n <team@axal.vc>\r\n\r\n')).toBe('team@axal.vc');
     expect(fromHeader('From: team@axal.vc\r\n\r\n')).toBe('team@axal.vc');
     expect(fromHeader('To: a@b.c\r\n\r\nFrom: team@axal.vc')).toBe('');
+  });
+});
+
+describe('snooze', () => {
+  const del = (q: string, token = 'good') => call('/api/snoozes?' + q, { method: 'DELETE', token, headers: { Origin: ORIGIN } });
+  const list = async (mailbox: string, token = 'good') => (await (await call('/api/snoozes?mailbox=' + encodeURIComponent(mailbox), { token })).json()) as { snoozes: { threadId: string; until: number; createdBy: string }[]; serverWakes: boolean };
+  const later = () => Date.now() + 3_600_000;
+  const db = () => env.DB as unknown as { exec: (s: string) => void };
+
+  it('keeps snoozes per mailbox, for its owner or the shared mailbox’s members only', async () => {
+    db().exec(`INSERT INTO mailbox_access (mailbox, member_email, created_at) VALUES ('deals@axal.vc', 'julian@axal.vc', 0)`);
+    expect((await post('/api/snoozes', 'good', { mailbox: 'julian@axal.vc', threadId: 't1', until: later(), labelId: 'Label_9', lastMessageId: 'm1' })).status).toBe(201);
+    expect((await post('/api/snoozes', 'good', { mailbox: 'deals@axal.vc', threadId: 's1', until: later(), labelId: 'Label_3' })).status).toBe(201);
+    expect((await post('/api/snoozes', 'good', { mailbox: 'priya@axal.vc', threadId: 't2', until: later(), labelId: 'L' })).status).toBe(403);
+    expect((await post('/api/snoozes', 'priya', { mailbox: 'deals@axal.vc', threadId: 's2', until: later(), labelId: 'L' })).status).toBe(403);
+    expect((await call('/api/snoozes?mailbox=julian%40axal.vc', { token: 'priya' })).status).toBe(403);
+    expect((await post('/api/snoozes', 'good', { mailbox: 'julian@axal.vc', threadId: 't3', until: Date.now() - 1, labelId: 'L' })).status).toBe(400);
+    expect((await post('/api/snoozes', 'good', { mailbox: 'julian@axal.vc', threadId: 't3', until: Date.now() + 400 * 86_400_000, labelId: 'L' })).status).toBe(400);
+    expect((await post('/api/snoozes', 'good', { mailbox: 'julian@axal.vc', threadId: '../x', until: later(), labelId: 'L' })).status).toBe(400);
+    expect((await list('julian@axal.vc')).snoozes.map(x => x.threadId)).toEqual(['t1']);
+    const shared = await list('deals@axal.vc');
+    expect(shared).toMatchObject({ serverWakes: false, snoozes: [{ threadId: 's1', createdBy: 'julian@axal.vc' }] });
+    // Visible to the mailbox's team, in its history.
+    const a = await (await call('/api/shared/deals%40axal.vc/threads/s1/activity', { token: 'good' })).json() as { activity: { action: string }[] };
+    expect(a.activity.map(x => x.action)).toEqual(['snoozed']);
+    expect((await del('mailbox=deals%40axal.vc&threadId=s1')).status).toBe(200);
+    expect((await list('deals@axal.vc')).snoozes).toEqual([]);
+  });
+
+  it('decides when a snoozed conversation comes back', () => {
+    const r = { until: 1000, label_id: 'Label_9', last_message_id: 'm1' };
+    const snoozed = (extra: { id: string; labelIds?: string[] }[] = []) => ({ messages: [{ id: 'm1', labelIds: ['Label_9'] }, ...extra] });
+    expect(wakeReason(r, snoozed(), 500)).toBeNull();
+    expect(wakeReason(r, snoozed(), 1000)).toBe('due');
+    expect(wakeReason(r, snoozed([{ id: 'm2', labelIds: ['UNREAD'] }]), 500)).toBe('reply');
+    expect(wakeReason(r, snoozed([{ id: 'm2', labelIds: ['SENT'] }]), 500)).toBeNull(); // your own reply doesn't wake it
+    expect(wakeReason(r, { messages: [{ id: 'm1', labelIds: ['INBOX', 'Label_9'] }] }, 500)).toBe('gone'); // moved back elsewhere
+    expect(wakeReason(r, { messages: [{ id: 'm1', labelIds: [] }] }, 500)).toBe('gone'); // label removed elsewhere
+    expect(wakeReason(r, { messages: [{ id: 'm1', labelIds: ['Label_9', 'TRASH'] }] }, 2000)).toBe('gone'); // trashed: never pulled back
+  });
+
+  it('wakes due conversations from the cron where the Worker can reach the mailbox', async () => {
+    db().exec(`INSERT INTO mailbox_access (mailbox, member_email, created_at) VALUES ('deals@axal.vc', 'julian@axal.vc', 0)`);
+    db().exec(`INSERT INTO snoozes (mailbox, thread_id, until, label_id, last_message_id, created_by, created_at) VALUES
+      ('deals@axal.vc', 's1', 1, 'Label_3', 'm1', 'julian@axal.vc', 0),
+      ('deals@axal.vc', 's2', ${Date.now() + 3_600_000}, 'Label_3', 'm1', 'julian@axal.vc', 0),
+      ('julian@axal.vc', 's3', 1, 'Label_9', 'm1', 'julian@axal.vc', 0)`);
+    sharedThreads.s1 = [{ id: 'm1', labelIds: ['Label_3'] }];
+    sharedThreads.s2 = [{ id: 'm1', labelIds: ['Label_3'] }];
+    sharedThreads.s3 = [{ id: 'm1', labelIds: ['Label_9'] }];
+    // Without delegation the Worker can't reach these mailboxes: the app wakes them when it's open.
+    expect(await runSnoozes(env)).toEqual({ woke: 0, skipped: 3 });
+    env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
+    expect(await runSnoozes(env)).toEqual({ woke: 2, skipped: 0 });
+    const mods = gmailCalls.filter(c => c.url.endsWith('/modify'));
+    expect(mods.map(c => [c.auth, c.url, JSON.parse(c.body)])).toEqual([
+      ['Bearer dwd:deals@axal.vc', '/gmail/v1/users/me/threads/s1/modify', { addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: ['Label_3'] }],
+      ['Bearer dwd:julian@axal.vc', '/gmail/v1/users/me/threads/s3/modify', { addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: ['Label_9'] }]
+    ]);
+    expect((await list('deals@axal.vc')).snoozes.map(x => x.threadId)).toEqual(['s2']);
+    // A reply from someone else brings s2 back early.
+    sharedThreads.s2.push({ id: 'm2', labelIds: ['UNREAD'] });
+    expect(await runSnoozes(env)).toEqual({ woke: 1, skipped: 0 });
+    expect((await list('deals@axal.vc')).snoozes).toEqual([]);
+    const a = await (await call('/api/shared/deals%40axal.vc/threads/s2/activity', { token: 'good' })).json() as { activity: { actor: string; action: string; detail: string }[] };
+    expect(a.activity[0]).toMatchObject({ actor: 'axal-mail', action: 'woke', detail: 'reply' });
   });
 });

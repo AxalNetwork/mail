@@ -716,3 +716,11 @@ button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 
 .shared-bar { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
 .input.sm { height: 28px; padding: 0 8px; font-size: 12.5px; }
 .shared-history { margin: 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 2px; }
+
+/* Snooze */
+.snooze-wrap { position: relative; display: inline-flex; }
+.snooze-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 260px; padding: 6px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 8px 24px rgba(24, 24, 27, .12); }
+.snooze-item { display: flex; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 0; border-radius: var(--r); background: none; text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
+.snooze-item:hover, .snooze-item:focus { background: var(--surface-2); outline: none; }
+.snooze-custom { display: flex; align-items: flex-end; gap: 6px; padding: 8px 10px 4px; border-top: 1px solid var(--line-2); margin-top: 4px; }
+.snooze-custom label { display: flex; flex-direction: column; gap: 4px; flex: 1; }

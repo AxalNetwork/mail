@@ -1,3 +1,4 @@
+import { formatUntil } from '../../lib/snooze';
 import type { Capabilities, FolderCounts, ListPage, ListQuery, MailProvider } from '../types';
 import type { Account, Contact, ConversationSample, ConvMessage, DraftContent, Message, OutgoingMessage, Profile, SavedDraft, SentResult, Thread } from '../../types';
 import { clockTime } from '../../lib/format';
@@ -93,7 +94,7 @@ export class DemoProvider implements MailProvider {
     switch (q.folder) {
       case 'inbox': list = this.open().filter(inCat); break;
       case 'starred': list = this.threads.filter(t => t.starred); break;
-      case 'snoozed': list = this.threads.filter(t => t.snoozed); break;
+      case 'snoozed': list = this.threads.filter(t => t.snoozed).map(t => (t.snoozedUntil ? { ...t, followup: 'Until ' + formatUntil(t.snoozedUntil, Date.now()) } : t)); break;
       case 'sent': list = sent; break;
       case 'drafts': list = this.outbox.filter(o => o.folder === 'draft'); break;
       case 'scheduled': list = this.outbox.filter(o => o.folder === 'scheduled'); break;
@@ -125,7 +126,13 @@ export class DemoProvider implements MailProvider {
   async archive(id: string) { this.find(id).archived = true; }
   async applyLabel(id: string, name: string) { const t = this.find(id); if (!t.labels.includes(name)) t.labels.push(name); }
   async trash(id: string) { this.find(id).archived = true; }
-  async snooze(id: string) { this.find(id).snoozed = true; return 'Monday 09:00'; }
+  async snooze(id: string, until: number) { const t = this.find(id); t.snoozed = true; t.snoozedUntil = until; return formatUntil(until, Date.now()); }
+  async unsnooze(id: string) { const t = this.find(id); t.snoozed = false; t.snoozedUntil = undefined; }
+  async wakeDue() {
+    const due = this.threads.filter(t => t.snoozed && t.snoozedUntil && t.snoozedUntil <= Date.now());
+    for (const t of due) { t.snoozed = false; t.snoozedUntil = undefined; t.unread = true; }
+    return due.length;
+  }
 
   async searchContacts(q: string): Promise<Contact[]> {
     const n = q.trim().toLowerCase();
