@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Mentionable } from '../../providers/gmail/notes';
 
 interface Props {
@@ -21,6 +21,16 @@ export function MentionBox({ value, onChange, members, placeholder, autoFocus, o
   const ref = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<string | null>(null);
   const [active, setActive] = useState(0);
+  // Where the caret goes after a pick, applied as soon as the new text renders,
+  // so keystrokes typed right after a pick land after the name.
+  const caretAfter = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && caretAfter.current != null) {
+      el.setSelectionRange(caretAfter.current, caretAfter.current);
+      caretAfter.current = null;
+    }
+  }, [value]);
   const matches = useMemo(() => {
     if (query == null) return [];
     const q = query.toLowerCase();
@@ -36,10 +46,10 @@ export function MentionBox({ value, onChange, members, placeholder, autoFocus, o
     const el = ref.current!;
     const caret = el.selectionStart;
     const before = value.slice(0, caret).replace(/@([\w.\- ]{0,30})$/, '@' + m.name + ' ');
-    const next = before + value.slice(caret);
-    onChange(next);
+    caretAfter.current = before.length;
+    onChange(before + value.slice(caret));
     setQuery(null);
-    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(before.length, before.length); });
+    el.focus();
   };
 
   return (
