@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Account, AiInsight, Folder, AttachmentRef, Category, Identity, Mailbox, OutgoingMessage, SentResult, Thread, ThreadSummary } from './types';
 import type { FolderCounts, MailProvider } from './providers/types';
 import type { Assistant } from './assistant/types';
@@ -18,6 +18,7 @@ import { Analytics, type Deliverability } from './components/analytics/Analytics
 import { Automations } from './components/automations/Automations';
 import { Sequences } from './components/automations/Sequences';
 import type { SequencesApi } from './lib/sequencesApi';
+import { LocalDismissals, type DismissalStore } from './lib/automationsApi';
 import type { NotesStore } from './providers/gmail/notes';
 import { InternalPage } from './components/internal/InternalPage';
 import type { ReportBug } from './lib/diagnostics';
@@ -49,6 +50,8 @@ interface Props {
   sequences?: SequencesApi | null;
   /** Internal notes and comments (backend, or this device). */
   notes?: NotesStore | null;
+  /** Dismissed automation suggestions (backend, or this device). */
+  dismissals?: DismissalStore | null;
 }
 
 interface ListState {
@@ -66,7 +69,8 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals }: Props) {
+  const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -419,7 +423,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
               deliverability={deliverability} onOpen={id => go('inbox', id)} />
           )}
           {view === 'automations' && (
-            <Automations provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''} aiReady={assistant.live}
+            <Automations provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''} assistant={assistant} dismissals={dismissalStore}
               onOpen={id => go('inbox', id)} onGo={go}
               onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))} />
           )}

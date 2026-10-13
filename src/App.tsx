@@ -18,6 +18,7 @@ import { HttpAdminApi, type AdminApi, type Role } from './admin/api';
 import { httpReportBug, type ReportBug } from './lib/diagnostics';
 import { HttpSequencesApi, SENDER_SCOPES, type SequencesApi } from './lib/sequencesApi';
 import { requestOfflineCode } from './providers/gmail/auth';
+import { HttpDismissals, type DismissalStore } from './lib/automationsApi';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -160,6 +161,11 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.sessionUrl, config.googleClientId]
   );
 
+  const dismissals = useMemo<DismissalStore | null>(
+    () => (mode === 'gmail' && auth && config.sessionUrl ? new HttpDismissals(() => auth.token()) : null),
+    [mode, auth, config.sessionUrl]
+  );
+
   const deliverability = useMemo(
     () => (mode === 'gmail' && auth && config.sessionUrl
       ? async () => {
@@ -227,6 +233,7 @@ function Session({ config }: { config: AppConfig }) {
       reportBug={reportBug}
       deliverability={deliverability}
       sequences={sequences}
+      dismissals={dismissals}
       notes={session.notes || null}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}

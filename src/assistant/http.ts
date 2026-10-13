@@ -1,6 +1,6 @@
 import type { AiInsight, Thread } from '../types';
 import type { PersonaKey, PersonaMessage } from '../lib/bulk';
-import type { Assistant, AiResult, DraftRequest, RewriteMode } from './types';
+import type { Assistant, AiResult, Briefing, Classification, DraftRequest, RewriteMode, TriageItem } from './types';
 import { htmlToText } from '../lib/html';
 
 /**
@@ -11,6 +11,8 @@ import { htmlToText } from '../lib/html';
  *   POST {base}/draft    { thread, instruction, recipientFirstName } → AiResult
  *   POST {base}/rewrite  { text, mode, thread }             → AiResult
  *   POST {base}/persona  { persona, tone, brief }           → { subject, body }
+ *   POST {base}/classify { items }                          → { results: Classification[] }
+ *   POST {base}/briefing { items, followUps }               → Briefing
  *
  * The caller's Google access token is forwarded as a Bearer token so the
  * backend can verify who is asking.
@@ -48,4 +50,6 @@ export class HttpAssistant implements Assistant {
   draft(req: DraftRequest) { return this.post<AiResult>('/draft', { ...req, thread: this.slim(req.thread) }); }
   rewrite(html: string, mode: RewriteMode, thread: Thread | null) { return this.post<AiResult>('/rewrite', { text: htmlToText(html), mode, thread: this.slim(thread) }); }
   writePersona(persona: PersonaKey, tone: string, brief: string) { return this.post<PersonaMessage>('/persona', { persona, tone, brief }); }
+  async classify(items: TriageItem[]): Promise<Classification[]> { return (await this.post<{ results: Classification[] }>('/classify', { items })).results; }
+  briefing(items: TriageItem[], followUps: number) { return this.post<Briefing>('/briefing', { items, followUps }); }
 }

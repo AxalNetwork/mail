@@ -123,6 +123,7 @@ export class DemoProvider implements MailProvider {
   async markRead(id: string, read: boolean) { this.find(id).unread = !read; }
   async setStarred(id: string, starred: boolean) { this.find(id).starred = starred; }
   async archive(id: string) { this.find(id).archived = true; }
+  async applyLabel(id: string, name: string) { const t = this.find(id); if (!t.labels.includes(name)) t.labels.push(name); }
   async trash(id: string) { this.find(id).archived = true; }
   async snooze(id: string) { this.find(id).snoozed = true; return 'Monday 09:00'; }
 

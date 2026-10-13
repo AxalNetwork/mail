@@ -353,6 +353,17 @@ export class GmailProvider implements MailProvider {
   async markRead(id: string, read: boolean) { await (read ? this.modify(id, [], ['UNREAD']) : this.modify(id, ['UNREAD'], [])); }
   async setStarred(id: string, starred: boolean) { await (starred ? this.modify(id, ['STARRED'], []) : this.modify(id, [], ['STARRED'])); }
   async archive(id: string) { await this.modify(id, [], ['INBOX']); }
+
+  async applyLabel(id: string, name: string) {
+    await this.loadLabels();
+    let labelId = [...this.labelNames.entries()].find(([, n]) => n.toLowerCase() === name.toLowerCase())?.[0];
+    if (!labelId) {
+      const l = await this.api.request<GmailLabel>(this.gmail + '/labels', { json: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' } });
+      this.labelNames.set(l.id, l.name);
+      labelId = l.id;
+    }
+    await this.modify(id, [labelId], []);
+  }
   async trash(id: string) { await this.api.request(this.gmail + '/threads/' + id + '/trash', { method: 'POST' }); }
   async snooze(): Promise<string> { throw new Error('Snooze is not available through the Gmail API.'); }
 

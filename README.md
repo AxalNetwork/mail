@@ -145,7 +145,14 @@ Notes are keyed by the conversation's first `Message-ID`, so teammates' copies o
 
 **Analytics** (Workspace → Analytics) reads the metadata of your recent conversations (senders, recipients, times and bulk-mail headers; never bodies) straight from Gmail into the browser, for 7, 30 or 90 days (up to 300 or 500 conversations), and computes everything there. Nothing is stored. It shows volume per day, your and their median response times, message and contact reply rates, who is waiting on whom, sending hours and top contacts, with the definitions on each tile. A **Deliverability** panel checks the domain's MX, SPF, DKIM (Google selector) and DMARC records through the Worker (`GET /api/analytics/deliverability`, organization domains only). Opens, clicks, bounces and inbox placement aren't measured: a mailbox can't see them, and tracking pixels or links would need recipients' consent.
 
-**AI Automations** turns the same data into work to approve: a daily briefing, a follow-up agent (you wrote last, 3+ days ago) and a reply queue, each with *Draft* buttons that open the composer with an assistant draft. Nothing is sent automatically. Inbox management, CRM sync, outreach sequences, scheduling, support and document processing are listed with what each needs first.
+**AI Automations** turns the same data into work to approve. Nothing is ever sent automatically, and an email can never authorize an action by itself.
+
+- **Daily briefing**: counts for the last 24 hours, plus (with the assistant) a written summary whose priorities and dates each link to the conversation they come from. The Worker drops any item that does not cite a conversation it was given.
+- **Intelligent inbox manager**: for the latest 20 inbox conversations, a suggested category (Investor, Founder, Investment opportunity, Portfolio company, Partnership, Event, Administrative, Newsletter, Other), priority, urgency, whether a reply is needed, confidence, a one-line explanation and action items. It reads sender and preview only. A label (`AI/<Category>`, created on first use) is added only after you confirm it, one conversation at a time.
+- **Follow-up agent** (you wrote last, 3+ days ago) and **reply assistant** (someone is waiting on you): each row says why it is there and offers *Draft*, which opens the composer with an assistant draft, and *Dismiss*. A dismissal is kept per member for 120 days and keyed to the latest message, so the row comes back only if the conversation moves on.
+- A status table shows what is operational, partial, needs setup, blocked or planned. Email-to-CRM is blocked on Contacts (issue #5); meeting scheduling needs Google Calendar access; the support agent needs a shared support inbox (issue #6) and an approved answer base; document processing needs Documents (issue #7).
+
+The inbox manager and the written briefing need `ANTHROPIC_API_KEY`; without it they say so and everything else keeps working. Dismissals are stored in D1 (migration `0008_automations.sql`), or in the browser when there is no backend.
 
 ## Outreach sequences
 
@@ -184,6 +191,9 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/assistant/draft` | Draft from an instruction and/or the thread |
 | `POST /api/assistant/rewrite` | `shorter`, `formal`, `warmer`, `clarity`, `translate` (French) |
 | `POST /api/assistant/persona` | Bulk email subject and body for one persona, with merge tokens |
+| `POST /api/assistant/classify` | Inbox manager suggestions for up to 25 conversations (metadata and preview); unknown ids are dropped |
+| `POST /api/assistant/briefing` | Daily briefing: summary, priorities and explicit commitments, each citing a given conversation |
+| `GET/POST/DELETE /api/automations/dismissed` | Dismissed follow-up, reply and inbox suggestions (`{ kind, key }`) |
 | `POST /api/bug-report` | File a bug report as a GitHub issue |
 | `GET/POST/DELETE /api/sequences/sender` | Sending grant status, connect (authorization code), disconnect |
 | `GET/POST /api/sequences` · `GET/PUT /api/sequences/:id` | Outreach sequences: list, create, read, edit (new version) |

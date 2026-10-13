@@ -167,6 +167,22 @@ describe('GmailProvider', () => {
     expect(calls.find(c => c.url.pathname.endsWith('/threads'))!.url.searchParams.get('q')).toBe('rfc822msgid:root@mail.example');
   });
 
+  it('applies a label by name, creating it once when missing', async () => {
+    const calls = mockFetch({
+      ...baseRoutes,
+      'POST /users/me/labels': () => ({ id: 'Label_9', name: 'AI/Investor', type: 'user' }),
+      'POST /threads/t1/modify': () => ({}),
+      'POST /threads/t2/modify': () => ({})
+    });
+    const g = new GmailProvider(fakeAuth());
+    await g.applyLabel('t1', 'AI/Investor');
+    await g.applyLabel('t2', 'ai/investor');
+    await g.applyLabel('t2', 'Founders');
+    expect(calls.filter(c => c.method === 'POST' && c.url.pathname.endsWith('/labels'))).toHaveLength(1);
+    const mods = calls.filter(c => c.url.pathname.endsWith('/modify')).map(c => JSON.parse(c.body!).addLabelIds[0]);
+    expect(mods).toEqual(['Label_9', 'Label_9', 'Label_1']);
+  });
+
   it('creates a draft, updates it in place, then sends the draft', async () => {
     const calls = mockFetch({
       ...baseRoutes,
