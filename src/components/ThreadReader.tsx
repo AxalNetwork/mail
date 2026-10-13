@@ -3,6 +3,8 @@ import { Avatar } from './Avatar';
 import { MessageBody } from './MessageBody';
 import { formatSize } from '../lib/format';
 import { InternalPanel } from './internal/InternalPanel';
+import { SnoozeMenu } from './SnoozeMenu';
+import { formatUntil } from '../lib/snooze';
 import type { NotesStore } from '../providers/gmail/notes';
 
 interface Props {
@@ -15,7 +17,9 @@ interface Props {
   onReply: (all?: boolean) => void;
   onForward: () => void;
   onArchive: () => void;
-  onSnooze: () => void;
+  onSnooze: (until: number) => void;
+  /** Back to the inbox now (shown for a conversation snoozed here). */
+  onUnsnooze?: () => void;
   onDelete: () => void;
   onDownload: (a: AttachmentRef) => void;
   /** Internal notes for real mailboxes (the demo shows its sample activity instead). */
@@ -46,11 +50,14 @@ export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
           <button className="btn sm" onClick={() => p.onReply(true)} disabled={!canReply}>Reply all</button>
           <button className="btn sm" onClick={p.onForward}>Forward</button>
           <button className="btn sm" onClick={p.onArchive} disabled={!canAct}>Archive</button>
-          <button className="btn sm" onClick={p.onSnooze} disabled={!canAct || !p.canSnooze}
-            title={p.canSnooze ? undefined : 'Snooze is not available through the Gmail API'}>Snooze</button>
+          {t.snoozedUntil && p.onUnsnooze
+            ? <button className="btn sm" onClick={p.onUnsnooze} title={'Snoozed until ' + formatUntil(t.snoozedUntil, Date.now())}>Unsnooze</button>
+            : <SnoozeMenu disabled={!canAct || !p.canSnooze} onPick={p.onSnooze}
+              title={p.canSnooze ? undefined : 'Snooze needs the Axal VC Mail backend'} />}
           <button className="btn sm danger" onClick={p.onDelete} disabled={!canAct}>Delete</button>
         </div>
         <h2>{t.subject}</h2>
+        {t.snoozedUntil && <div className="notice" style={{ background: 'var(--surface-2)', marginTop: 6 }}>Snoozed until {formatUntil(t.snoozedUntil, Date.now())}. It comes back to the inbox then, or sooner if someone replies.</div>}
         <div className="reader-meta">
           {t.labels.map(l => <span key={l} className="pill">{l}</span>)}
           <span>{t.linkText}</span>

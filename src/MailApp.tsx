@@ -132,6 +132,21 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   if (compose?.reply?.threadId) presence[compose.reply.threadId] = 'replying';
   useSharedPresence(shared || null, sharedMailbox, presence);
 
+  // ----- snooze: bring back what is due (the Worker does too, where it can reach the mailbox) -----
+  const reloadRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!provider.wakeDue) return;
+    let live = true;
+    const check = () => provider.wakeDue!().then(n => {
+      if (!live || !n) return;
+      toast(n === 1 ? 'A snoozed conversation is back in the inbox.' : n + ' snoozed conversations are back in the inbox.');
+      reloadRef.current();
+    }).catch(() => {});
+    check();
+    const t = setInterval(check, 60_000);
+    return () => { live = false; clearInterval(t); };
+  }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const composerRef = useRef<ComposerHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listReq = useRef(0);
@@ -181,6 +196,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   useEffect(() => { fetchList(); }, [fetchList, reloadTick]);
 
   const reload = useCallback(() => { setReloadTick(t => t + 1); refreshCounts(); }, [refreshCounts]);
+  reloadRef.current = reload;
 
   // ----- selected thread -----
   useEffect(() => {
@@ -426,7 +442,13 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 onForward={() => thread && openCompose({ forward: thread })}
                 onArchive={() => act(() => provider.archive(thread!.id), 'Archived')}
                 onDelete={() => act(() => provider.trash(thread!.id), demo ? 'Deleted' : 'Moved to Trash')}
-                onSnooze={() => thread && provider.snooze(thread.id).then(until => { removeFromList(thread.id); toast('Snoozed until ' + until); refreshCounts(); }).catch(e => toast({ text: errorText(e), error: true }))}
+                onSnooze={until => thread && provider.snooze(thread.id, until).then(async when => {
+                  removeFromList(thread.id);
+                  const server = await provider.snoozeWakesOnServer?.().catch(() => false);
+                  toast(demo ? 'Snoozed until ' + when + ' (demo)' : 'Snoozed until ' + when + (server ? '.' : '. It comes back when Axal VC Mail is open at that time.'));
+                  refreshCounts();
+                }).catch(e => toast({ text: errorText(e), error: true }))}
+                onUnsnooze={provider.unsnooze ? () => thread && act(() => provider.unsnooze!(thread.id), 'Back in the inbox') : undefined}
                 onDownload={download}
                 internal={notes ? { store: notes, authorName: boot.account.name, onChanged: refreshInternal } : null}
                 shared={shared && sharedMailbox && thread ? <SharedBar key={thread.id} api={shared} mailbox={sharedMailbox} threadId={thread.id} members={sharedMembers} /> : null}

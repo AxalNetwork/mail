@@ -12,6 +12,7 @@ import { fileExt, plural } from '../../lib/format';
 import { textToHtml } from '../../lib/html';
 import { extractBody } from '../../lib/outgoing';
 import { LocalNotes, type NotesStore } from './notes';
+import { formatUntil, type SnoozeStore } from '../../lib/snooze';
 
 const GMAIL = 'https://gmail.googleapis.com/';
 const PEOPLE = 'https://people.googleapis.com/v1';
@@ -71,7 +72,12 @@ export interface GmailOptions {
   proxyBase?: string;
   /** Shared mailboxes the user may switch to. */
   sharedMailboxes?: () => Promise<string[]>;
+  /** Where snooze times are kept. Without one, snooze is unavailable (the Gmail API has none). */
+  snoozes?: SnoozeStore;
 }
+
+/** The Gmail label a snoozed conversation carries while it is out of the inbox. */
+export const SNOOZE_LABEL = 'Snoozed';
 
 /**
  * Gmail + Google People API, called directly from the browser with the user's
@@ -109,6 +115,7 @@ export class GmailProvider implements MailProvider {
     this.uploads = root + 'upload/gmail/v1/users/me';
     // The shared mailbox's own signature is managed by its owner in Gmail.
     if (this.mailbox) this.capabilities.installSignature = false;
+    this.capabilities.snooze = !!opts.snoozes;
   }
 
   // ---------- account & settings ----------
@@ -232,7 +239,8 @@ export class GmailProvider implements MailProvider {
   async counts(): Promise<FolderCounts> {
     const get = (id: string) => this.api.request<GmailLabel>(this.gmail + '/labels/' + id).catch(() => ({} as GmailLabel));
     const [inbox, drafts] = await Promise.all([get('INBOX'), get('DRAFT')]);
-    return { inbox: inbox.threadsUnread || 0, drafts: drafts.messagesTotal || 0, sent: 0, snoozed: 0, scheduled: 0 };
+    const snoozed = await this.snoozeList().then(l => l.length).catch(() => 0);
+    return { inbox: inbox.threadsUnread || 0, drafts: drafts.messagesTotal || 0, sent: 0, snoozed, scheduled: 0 };
   }
 
   // ---------- threads ----------
@@ -250,7 +258,8 @@ export class GmailProvider implements MailProvider {
         else query.labelIds = ['INBOX', q.category];
         break;
       case 'starred': query.labelIds = ['STARRED']; break;
-      case 'snoozed': query.q = 'in:snoozed'; break;
+      // Gmail's own snoozes, and the ones made here (label "Snoozed").
+      case 'snoozed': query.q = 'in:snoozed OR label:' + SNOOZE_LABEL.toLowerCase(); break;
       case 'sent': query.labelIds = ['SENT']; break;
       case 'scheduled': query.q = 'in:scheduled'; break;
       case 'search': query.q = q.query; break;
@@ -260,8 +269,13 @@ export class GmailProvider implements MailProvider {
     const threads = await mapLimit(r.threads || [], 8, t =>
       this.api.request<GmailThread>(this.gmail + '/threads/' + t.id, { query: { format: 'metadata', metadataHeaders: METADATA_HEADERS } }));
     const now = new Date();
+    const until = q.folder === 'snoozed' ? new Map((await this.snoozeList().catch(() => [])).map(x => [x.threadId, x.until])) : null;
     return {
-      threads: threads.map(t => toSummary(t, { me: a.email, labelNames: this.labelNames, now })),
+      threads: threads.map(t => {
+        const s = toSummary(t, { me: a.email, labelNames: this.labelNames, now });
+        const u = until?.get(t.id);
+        return u ? { ...s, snoozedUntil: u, followup: 'Until ' + formatUntil(u, now.getTime()) } : s;
+      }),
       nextPageToken: r.nextPageToken
     };
   }
@@ -336,8 +350,10 @@ export class GmailProvider implements MailProvider {
     const rootKey = messages[0]?.messageIdHeader;
     const n = messages.length;
     const fromLine = s.outgoing ? 'Sent from ' + a.email : 'From ' + (s.email ? s.from.replace(/ \(\d+\)$/, '') + ' <' + s.email + '>' : s.from);
+    const snoozedUntil = s.labels.includes(SNOOZE_LABEL) ? (await this.snoozeList().catch(() => [])).find(x => x.threadId === id)?.until : undefined;
     return {
       ...s,
+      snoozedUntil,
       noReply: /no-?reply|notifications?@/i.test(s.email),
       messages,
       // Internal notes load separately (the reader's Internal panel), keyed by noteKey.
@@ -355,7 +371,8 @@ export class GmailProvider implements MailProvider {
   async setStarred(id: string, starred: boolean) { await (starred ? this.modify(id, ['STARRED'], []) : this.modify(id, [], ['STARRED'])); }
   async archive(id: string) { await this.modify(id, [], ['INBOX']); }
 
-  async applyLabel(id: string, name: string) {
+  /** A user label's id by name, created when missing. */
+  private async labelId(name: string): Promise<string> {
     await this.loadLabels();
     let labelId = [...this.labelNames.entries()].find(([, n]) => n.toLowerCase() === name.toLowerCase())?.[0];
     if (!labelId) {
@@ -363,10 +380,77 @@ export class GmailProvider implements MailProvider {
       this.labelNames.set(l.id, l.name);
       labelId = l.id;
     }
-    await this.modify(id, [labelId], []);
+    return labelId;
+  }
+
+  async applyLabel(id: string, name: string) {
+    await this.modify(id, [await this.labelId(name)], []);
   }
   async trash(id: string) { await this.api.request(this.gmail + '/threads/' + id + '/trash', { method: 'POST' }); }
-  async snooze(): Promise<string> { throw new Error('Snooze is not available through the Gmail API.'); }
+
+  // ---------- snooze (kept by the Worker; Gmail's API has no snooze) ----------
+
+  private async snoozeBox() { return (this.mailbox || (await this.account()).email).toLowerCase(); }
+  private async snoozeList() { return this.opts.snoozes ? this.opts.snoozes.list(await this.snoozeBox()) : []; }
+  private minimal(id: string) {
+    return this.api.request<{ messages?: { id: string; labelIds?: string[] }[] }>(this.gmail + '/threads/' + id, { query: { format: 'minimal' } });
+  }
+
+  async snooze(id: string, until: number): Promise<string> {
+    const store = this.opts.snoozes;
+    if (!store) throw new Error('Snooze needs the Axal VC Mail backend.');
+    if (!(until > Date.now())) throw new Error('Pick a time in the future.');
+    const labelId = await this.labelId(SNOOZE_LABEL);
+    const t = await this.minimal(id);
+    const last = t.messages?.[t.messages.length - 1]?.id || '';
+    // Record first: a conversation must never leave the inbox without a way back.
+    await store.set(await this.snoozeBox(), { threadId: id, until, labelId, lastMessageId: last });
+    await this.modify(id, [labelId], ['INBOX']);
+    return formatUntil(until, Date.now());
+  }
+
+  async unsnooze(id: string) {
+    const box = await this.snoozeBox();
+    const s = (await this.snoozeList()).find(x => x.threadId === id);
+    await this.modify(id, ['INBOX'], [s?.labelId || (await this.labelId(SNOOZE_LABEL))]);
+    if (s) await this.opts.snoozes!.clear(box, id, 'unsnoozed');
+  }
+
+  async snoozeWakesOnServer() {
+    return this.opts.snoozes ? this.opts.snoozes.serverWakes(await this.snoozeBox()) : false;
+  }
+
+  /**
+   * Bring back what is due, or what someone answered meanwhile. The Worker does
+   * this on its own where it can reach the mailbox; elsewhere this is how they come back.
+   */
+  async wakeDue(): Promise<number> {
+    const store = this.opts.snoozes;
+    if (!store) return 0;
+    const box = await this.snoozeBox();
+    const list = await store.list(box);
+    if (!list.length) return 0;
+    const now = Date.now();
+    let woke = 0;
+    for (const s of list.slice(0, 25)) {
+      let t: { messages?: { id: string; labelIds?: string[] }[] };
+      try { t = await this.minimal(s.threadId); } catch (e) {
+        if ((e as { status?: number }).status === 404) await store.clear(box, s.threadId, 'woke');
+        continue;
+      }
+      const msgs = t.messages || [];
+      const labels = new Set(msgs.flatMap(m => m.labelIds || []));
+      // Brought back, unlabelled or trashed elsewhere: forget it rather than pull it back.
+      if (labels.has('INBOX') || labels.has('TRASH') || !labels.has(s.labelId)) { await store.clear(box, s.threadId, 'woke'); continue; }
+      const i = msgs.findIndex(m => m.id === s.lastMessageId);
+      const answered = i >= 0 && msgs.slice(i + 1).some(m => !m.labelIds?.includes('SENT') && !m.labelIds?.includes('DRAFT'));
+      if (s.until > now && !answered) continue;
+      await this.modify(s.threadId, ['INBOX', 'UNREAD'], [s.labelId]);
+      await store.clear(box, s.threadId, 'woke');
+      woke++;
+    }
+    return woke;
+  }
 
   // ---------- contacts ----------
 

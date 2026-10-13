@@ -261,6 +261,7 @@ export async function recordReply(env: Env, user: User, mailbox: string, thread:
 
 // ---------- routing ----------
 
+// (shared_activity also records 'snoozed', 'unsnoozed' and 'woke' since migration 0011.)
 /**
  * Workload for a shared mailbox: conversations by team status and assignee,
  * and replies sent per member in the period, from the tables above. Counts

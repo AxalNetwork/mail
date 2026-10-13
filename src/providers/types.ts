@@ -68,7 +68,14 @@ export interface MailProvider {
   setStarred(id: string, starred: boolean): Promise<void>;
   archive(id: string): Promise<void>;
   trash(id: string): Promise<void>;
-  snooze(id: string): Promise<string>;
+  /** Hide the conversation until `until` (epoch ms); returns how to describe that time. */
+  snooze(id: string, until: number): Promise<string>;
+  /** Back to the inbox now. */
+  unsnooze?(id: string): Promise<void>;
+  /** Bring back what is due (or was answered) and return how many came back. */
+  wakeDue?(): Promise<number>;
+  /** The server brings snoozed conversations back by itself (otherwise only an open app does). */
+  snoozeWakesOnServer?(): Promise<boolean>;
   /** Add a user label by name, creating it when it does not exist yet. Only call after the user confirmed. */
   applyLabel?(id: string, name: string): Promise<void>;
 

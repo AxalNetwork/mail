@@ -26,7 +26,7 @@ export interface ConversationState {
   presence: { email: string; state: 'viewing' | 'replying' }[];
 }
 
-export interface SharedActivity { actor: string; action: 'assigned' | 'claimed' | 'released' | 'unassigned' | 'status' | 'replied' | 'send_refused'; detail: string; at: number }
+export interface SharedActivity { actor: string; action: 'assigned' | 'claimed' | 'released' | 'unassigned' | 'status' | 'replied' | 'send_refused' | 'snoozed' | 'unsnoozed' | 'woke'; detail: string; at: number }
 
 /** Someone else changed the conversation first; `current` is what it is now. */
 export class ConflictError extends Error {
@@ -94,5 +94,8 @@ export const ACTION_TEXT: Record<SharedActivity['action'], (detail: string) => s
   unassigned: d => 'unassigned ' + d,
   status: d => 'marked it ' + (STATUS_LABEL[d as SharedStatus] || d).toLowerCase(),
   replied: d => 'replied' + (d ? ' as ' + d : ''),
-  send_refused: d => 'was stopped from sending (' + d + ')'
+  send_refused: d => 'was stopped from sending (' + d + ')',
+  snoozed: d => 'snoozed it until ' + (Number(d) ? new Date(Number(d)).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'later'),
+  unsnoozed: () => 'brought it back from snooze',
+  woke: d => (d === 'reply' ? 'brought it back: someone replied' : 'brought it back: snooze ended')
 };

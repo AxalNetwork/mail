@@ -170,6 +170,17 @@ A record is **team** (every member sees and edits it) or **private** (only its c
 
 Limitations: email history covers the signed-in member's own mailbox and the last 90 days (up to 500 conversations), not teammates' mailboxes or shared inboxes. Internal notes stay on their conversations rather than being copied to records, and tasks will be linked once Tasks & Approvals (issue #2) exists.
 
+## Snooze
+
+**Snooze** in the reader hides a conversation until later today, tomorrow morning, the weekend, next week, or a date and time you pick (your browser's time zone). Gmail's API has no snooze, so Axal VC Mail does it in two parts:
+
+- In Gmail: the conversation gets the label **Snoozed** (created on first use) and leaves the inbox.
+- In D1 (`snoozes`, migration `0011_snoozes.sql`): the mailbox, the thread id, the wake-up time, and the id of the latest message at the time. No content.
+
+When the time comes, or when someone else replies first, the conversation goes back to the inbox, unread, and the label comes off. The Worker's cron (every 10 minutes) does this for mailboxes it can reach: any mailbox with domain-wide delegation (`GOOGLE_SERVICE_ACCOUNT`), or the mailbox behind `GMAIL_REFRESH_TOKEN`. For other mailboxes, the app does it with your own Gmail access when it's open (at load, then every minute), and says so when you snooze. A conversation moved back to the inbox, unlabelled or trashed elsewhere is simply forgotten, never pulled back.
+
+**Snoozed** lists the conversations snoozed here, with their wake-up time, and the ones snoozed in Gmail's own app; *Unsnooze* brings one back now. In a shared mailbox, snoozes are visible to everyone with access and appear in the conversation's history. Without the backend, snoozes are kept in the browser. Conversations snoozed here don't appear in Gmail's built-in Snoozed folder (look for the Snoozed label instead).
+
 ## Analytics and AI Automations
 
 **Analytics** (Workspace → Analytics) has three tabs, a period (7, 30 or 90 days, or a custom range up to 180 days back) and, when you can open shared mailboxes, a mailbox filter (this mailbox, one shared mailbox, or all of them).
@@ -239,6 +250,7 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `GET/POST /api/sequences` · `GET/PUT /api/sequences/:id` | Outreach sequences: list, create, read, edit (new version) |
 | `POST /api/sequences/:id/approve\|start\|pause\|stop` · `…/recipients/:rid/stop` | Approve a version (admins), run controls, stop or opt out one person |
 | `GET /api/analytics/deliverability` | MX, SPF, DKIM and DMARC checks for the organization domain |
+| `GET/POST/DELETE /api/snoozes` | Snoozed conversations of a mailbox you own or can open, with wake-up times (`serverWakes`: the cron brings them back) |
 | `GET /api/analytics/outreach?from=&to=` | Sequence figures: created, awaiting approval, accepted by Gmail, failed, unconfirmed, replied, bounce notices, opt-outs (delivery: unknown) |
 | `GET /api/shared/<mailbox>/summary?from=&to=` | Shared mailbox workload by status and member (members of the mailbox only) |
 | `GET /api/mailboxes` | Shared mailboxes this member may open |
@@ -301,6 +313,7 @@ worker/                   Backend (Cloudflare Worker)
   src/notes.ts            Internal notes, comments, mentions and activity (D1)
   src/contacts.ts         Contacts, organizations, merges and recorded events, with visibility checks (D1)
   src/shared.ts           Shared inbox assignment, status, presence, audit and send checks (D1)
+  src/snoozes.ts          Snooze times (D1) and the cron that brings conversations back
   migrations/             D1 schema
 wrangler.jsonc            Worker, assets, custom domain, D1 binding
 public/_headers           Security headers for the static frontend
