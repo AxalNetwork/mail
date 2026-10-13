@@ -5,6 +5,7 @@ import * as notes from './notes';
 import * as automations from './automations';
 import * as contacts from './contacts';
 import * as shared from './shared';
+import { outreachStats } from './outreach';
 import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
@@ -98,6 +99,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   }
   if (path === '/api/sequences' || path.startsWith('/api/sequences/')) return sequences.route(req, env, user, url);
 
+  if (path === '/api/analytics/outreach' && method === 'GET') return json(await outreachStats(env, user, url.searchParams));
   if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 

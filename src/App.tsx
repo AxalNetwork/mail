@@ -180,6 +180,18 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.sessionUrl]
   );
 
+  const outreach = useMemo(
+    () => (mode === 'gmail' && auth && config.sessionUrl
+      ? async (from: number, to: number) => {
+        const res = await fetch('/api/analytics/outreach?from=' + from + '&to=' + to, { headers: { Authorization: 'Bearer ' + (await auth.token()) } });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error((j as { error?: string }).error || 'Outreach figures failed (' + res.status + ')');
+        return j as Awaited<ReturnType<NonNullable<React.ComponentProps<typeof MailApp>['outreach']>>>;
+      }
+      : null),
+    [mode, auth, config.sessionUrl]
+  );
+
   const deliverability = useMemo(
     () => (mode === 'gmail' && auth && config.sessionUrl
       ? async () => {
@@ -253,6 +265,7 @@ function Session({ config }: { config: AppConfig }) {
       providerFor={auth ? m => gmailSession(auth, config, m).provider : undefined}
       onOpenShared={(m, id) => { setOpenThread(id); setShared(m); }}
       initialThread={openThread}
+      outreach={outreach}
       notes={session.notes || null}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => { setOpenThread(null); setShared(addr === own ? null : addr); } : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}

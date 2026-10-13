@@ -19,7 +19,7 @@ const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const PAGE_SIZE = 25;
 const PRIMARY_QUERY = '-category:social -category:promotions -category:updates -category:forums';
 const METADATA_HEADERS = ['From', 'To', 'Subject', 'Date', 'Content-Type'];
-const ANALYTICS_HEADERS = ['From', 'To', 'Cc', 'Subject', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
+const ANALYTICS_HEADERS = ['From', 'To', 'Cc', 'Subject', 'Message-ID', 'List-Unsubscribe', 'List-Id', 'Precedence', 'Auto-Submitted'];
 
 /** Bulk or machine-sent mail, which nobody expects an answer to. */
 function isAutomated(m: GmailMessage, from: string): boolean {
@@ -299,6 +299,7 @@ export class GmailProvider implements MailProvider {
           const sender = parseAddressList(header(m, 'From'))[0];
           const email = (sender?.email || '').toLowerCase();
           return {
+            id: header(m, 'Message-ID') || m.id,
             from: email,
             fromName: sender?.name || email,
             fromMe: mine.includes(email),

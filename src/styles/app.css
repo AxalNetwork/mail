@@ -716,3 +716,24 @@ button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 
 .shared-bar { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
 .input.sm { height: 28px; padding: 0 8px; font-size: 12.5px; }
 .shared-history { margin: 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 2px; }
+
+/* Analytics: paired columns and distributions */
+.cols-slot.pair { gap: 2px; }
+.cols-slot.pair .cols-bar { max-width: 9px; }
+.cols-bar.alt { background: var(--accent-line); }
+.cols-slot:hover .cols-bar.alt, .cols-bar.alt.on { background: var(--accent-disabled); }
+.cols-legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+.cols-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.cols-key { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); display: inline-block; }
+.cols-key.alt { background: var(--accent-line); }
+.hbars { display: flex; flex-direction: column; gap: 6px; }
+.hbar { display: grid; grid-template-columns: 72px minmax(0, 1fr) 76px; gap: 8px; align-items: center; font-size: 12.5px; }
+.hbar-label { color: var(--muted); }
+.hbar-track { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.hbar-fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.hbar-value { text-align: right; font-size: 12px; }
+.an-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.an-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.trow.outreach { grid-template-columns: minmax(0, 2fr) 110px 64px 76px 90px 64px 70px 90px; padding: 9px 14px; min-width: 760px; font-size: 12.5px; }
+.trow.team { grid-template-columns: minmax(0, 1.6fr) repeat(5, 80px); padding: 9px 14px; min-width: 600px; font-size: 12.5px; }
+.trow.mailboxes { grid-template-columns: minmax(0, 1.6fr) repeat(5, 90px); padding: 9px 14px; min-width: 620px; font-size: 12.5px; }
