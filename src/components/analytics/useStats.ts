@@ -7,7 +7,8 @@ import { computeStats, type MailboxStats } from '../../lib/analytics';
 const cache = new WeakMap<MailProvider, Map<number, { at: number; p: Promise<ConversationSample> }>>();
 const TTL = 5 * 60_000;
 
-function sample(provider: MailProvider, days: number, fresh: boolean): Promise<ConversationSample> {
+/** Conversation metadata for the last `days` days, cached per provider for five minutes. */
+export function sample(provider: MailProvider, days: number, fresh: boolean): Promise<ConversationSample> {
   let m = cache.get(provider);
   if (!m) cache.set(provider, (m = new Map()));
   const hit = m.get(days);

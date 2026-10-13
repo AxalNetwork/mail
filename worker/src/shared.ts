@@ -262,10 +262,54 @@ export async function recordReply(env: Env, user: User, mailbox: string, thread:
 // ---------- routing ----------
 
 // (shared_activity also records 'snoozed', 'unsnoozed' and 'woke' since migration 0011.)
+/**
+ * Workload for a shared mailbox: conversations by team status and assignee,
+ * and replies sent per member in the period, from the tables above. Counts
+ * only; members are listed by name, never ranked.
+ */
+async function summary(env: Env, mailbox: string, p: URLSearchParams) {
+  const to = Number(p.get('to')) || Date.now();
+  const from = Number(p.get('from')) || to - 30 * 86_400_000;
+  const rows = (await env.DB.prepare('SELECT status, assignee, COUNT(*) AS n FROM shared_conversations WHERE mailbox = ?1 GROUP BY status, assignee')
+    .bind(mailbox).all<{ status: Status; assignee: string | null; n: number }>()).results;
+  const byStatus: Record<Status, number> = { open: 0, pending: 0, resolved: 0 };
+  const people = new Map<string, Record<Status, number>>();
+  let unassignedOpen = 0;
+  for (const r of rows) {
+    byStatus[r.status] += r.n;
+    if (!r.assignee) { if (r.status !== 'resolved') unassignedOpen += r.n; continue; }
+    const x = people.get(r.assignee) || { open: 0, pending: 0, resolved: 0 };
+    x[r.status] += r.n;
+    people.set(r.assignee, x);
+  }
+  const acts = (await env.DB.prepare(`SELECT actor, action, COUNT(*) AS n FROM shared_activity WHERE mailbox = ?1 AND created_at >= ?2 AND created_at <= ?3
+    AND action IN ('replied', 'claimed', 'assigned') GROUP BY actor, action`).bind(mailbox, from, to).all<{ actor: string; action: string; n: number }>()).results;
+  const members = (await env.DB.prepare('SELECT member_email FROM mailbox_access WHERE mailbox = ?1 ORDER BY member_email').bind(mailbox).all<{ member_email: string }>()).results.map(r => r.member_email);
+  for (const a of acts) if (!people.has(a.actor) && members.includes(a.actor)) people.set(a.actor, { open: 0, pending: 0, resolved: 0 });
+  for (const m of members) if (!people.has(m)) people.set(m, { open: 0, pending: 0, resolved: 0 });
+  return {
+    from, to, byStatus,
+    /** Conversations with a stored state and no assignee that aren't resolved. Conversations nobody touched yet aren't counted here. */
+    unassignedTracked: unassignedOpen,
+    workload: [...people].sort((a, b) => a[0].localeCompare(b[0])).map(([email, c]) => ({
+      email, ...c,
+      replies: acts.filter(a => a.actor === email && a.action === 'replied').reduce((n, a) => n + a.n, 0),
+      assignmentsTaken: acts.filter(a => a.actor === email && a.action === 'claimed').reduce((n, a) => n + a.n, 0)
+    }))
+  };
+}
+
 const ROUTE = /^\/api\/shared\/([^/]+)\/threads(?:\/([\w-]+)(?:\/(activity|presence))?)?$/;
+const SUMMARY = /^\/api\/shared\/([^/]+)\/summary$/;
 
 export async function route(req: Request, env: Env, user: User, url: URL): Promise<Response> {
   if (url.pathname === '/api/shared' && req.method === 'GET') return json(await mailboxes(env, user));
+  const sm = SUMMARY.exec(url.pathname);
+  if (sm && req.method === 'GET') {
+    const mailbox = decodeURIComponent(sm[1]).toLowerCase();
+    await access(env, user, mailbox);
+    return json(await summary(env, mailbox, url.searchParams));
+  }
   const m = ROUTE.exec(url.pathname);
   if (!m) throw new HttpError(404, 'Not found');
   const mailbox = decodeURIComponent(m[1]).toLowerCase();

@@ -40,6 +40,17 @@ export interface SharedApi {
   get(mailbox: string, threadId: string): Promise<{ state: ConversationState; activity: SharedActivity[]; you: string }>;
   update(mailbox: string, threadId: string, expectedVersion: number, change: { assignee?: string | null; status?: SharedStatus }): Promise<ConversationState>;
   presence(mailbox: string, threadId: string, state: 'viewing' | 'replying' | 'gone'): Promise<void>;
+  /** Workload counts for the mailbox (members of it only). */
+  summary?(mailbox: string, from: number, to: number): Promise<TeamSummary>;
+}
+
+export interface TeamSummary {
+  from: number; to: number;
+  byStatus: Record<SharedStatus, number>;
+  /** Stored conversations with no assignee that aren't resolved. */
+  unassignedTracked: number;
+  /** One row per member, alphabetical. */
+  workload: { email: string; open: number; pending: number; resolved: number; replies: number; assignmentsTaken: number }[];
 }
 
 export class HttpSharedApi implements SharedApi {
@@ -65,6 +76,9 @@ export class HttpSharedApi implements SharedApi {
   get(mailbox: string, id: string) { return this.call<{ state: ConversationState; activity: SharedActivity[]; you: string }>(this.base(mailbox) + '/' + id); }
   async update(mailbox: string, id: string, expectedVersion: number, change: { assignee?: string | null; status?: SharedStatus }) {
     return (await this.call<{ state: ConversationState }>(this.base(mailbox) + '/' + id, { method: 'PATCH', body: JSON.stringify({ expectedVersion, ...change }) })).state;
+  }
+  summary(mailbox: string, from: number, to: number) {
+    return this.call<TeamSummary>('/' + encodeURIComponent(mailbox) + '/summary?from=' + from + '&to=' + to);
   }
   async presence(mailbox: string, id: string, state: 'viewing' | 'replying' | 'gone') {
     await this.call(this.base(mailbox) + '/' + id + '/presence', { method: 'POST', body: JSON.stringify({ state }), keepalive: state === 'gone' });

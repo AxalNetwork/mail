@@ -1,3 +1,4 @@
+import { saveCampaign } from '../../lib/campaignLog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Account, Identity, OutgoingMessage } from '../../types';
 import type { MailProvider } from '../../providers/types';
@@ -152,6 +153,8 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
     if (!b.reviewed) return set({ error: 'Confirm that you have reviewed the messages.' });
     const list = inc;
     const failed: string[] = [];
+    const accepted: { email: string; threadId: string }[] = [];
+    const startedAt = Date.now();
     let sent = 0;
     let held = 0;
     cancel.current = false;
@@ -168,7 +171,7 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
       };
       const hold = needsApproval(r.persona);
       try {
-        if (hold) { await provider.saveDraft(msg); held++; } else { await provider.send(msg); sent++; }
+        if (hold) { await provider.saveDraft(msg); held++; } else { const res = await provider.send(msg); accepted.push({ email: r.email, threadId: res.threadId }); sent++; }
       } catch (e) {
         failed.push(r.email + ': ' + errorText(e));
       }
@@ -177,6 +180,8 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
     }
     const stopped = cancel.current;
     setProgress(null);
+    // Counts, thread ids and the subject template (no recipient's merged text), in this browser, for Analytics → Outreach.
+    if (!demo) saveCampaign({ id: 'c' + startedAt, at: startedAt, subject: inc.length ? (b.msgs[inc[0].persona]?.subject || '') : '', from: identity.addr, total: list.length, accepted, held, failed: failed.length, scheduled: !!sched, stopped });
     const parts = [
       demo ? sent + ' recorded in demo mode, not delivered' : plural(sent, 'email') + (sched ? ' scheduled' : ' sent'),
       held ? held + (demo ? ' held for approval' : ' saved to Drafts for partner approval') : '',
