@@ -69,6 +69,7 @@ Configuration lives in the Worker, not in the build: the frontend reads `/api/co
 | `GOOGLE_CLIENT_SECRET` | secret (or the `OAUTH_CLIENT_SECRET` GitHub secret) | OAuth client secret; exchanges *Connect sending* grants for refresh tokens |
 | `TOKEN_ENCRYPTION_KEY` | secret (or the GitHub secret of the same name) | 32 bytes, base64; encrypts stored sending grants |
 | `GITHUB_TOKEN` | secret (or the `BUG_REPORTS_TOKEN` GitHub secret, which the deploy copies) | Enables *Report a bug* (account menu): a fine-grained token with **Issues: Read and write** on the repository |
+| `GITHUB_ISSUES_TOKENS` | secret | Tasks → GitHub issues: JSON `{"owner": "token"}`, one fine-grained token per GitHub owner with **Issues: Read and write** (see Tasks & Approvals) |
 | `GITHUB_REPO` | var, default `AxalNetwork/mail` | Where bug reports are filed |
 | `GMAIL_REFRESH_TOKEN` + `GMAIL_CLIENT_SECRET` | secrets | Instead of a service account: a refresh token (gmail.modify, issued to the client ID) for one mailbox, which super admins can then share |
 
@@ -185,6 +186,26 @@ Limitations: email history covers the signed-in member's own mailbox and the las
 
 Limitations: documents are per member (each in their own Drive); sharing a folder with the team is done in Drive, and a shared drive for firm documents would need a decision and another scope. Files put into the Axal VC Mail folder by hand in Drive aren't visible to the app (drive.file covers only files it created). There is no live sync: changes made in Drive appear on refresh. The composer's document picker still lists only the demo library.
 
+## Tasks & Approvals
+
+**Tasks** are run by the super admins. A super admin creates tasks (from scratch, from an email with *Create task* in the reader, from a follow-up in AI Automations, or by tracking a GitHub issue), assigns them to any member, admin or super admin, and sees and edits all of them. Everyone else sees only the tasks assigned to them and moves them along (start, waiting, complete); they can open the source email and see the GitHub link. Each task has a title, description, assignee, priority, status (open, in progress, waiting, completed, cancelled), an optional due date the person sets, its source email, how it was created (manual, AI-suggested, automation, GitHub) and its history. *Suggest tasks from this email* asks the assistant for action items; nothing is created until a super admin ticks one, quotes not found in the email are flagged, and no due date is ever set from a suggestion. Completing a task sends nothing and changes nothing on GitHub.
+
+**GitHub issues.** The issues of the firm's repositories are listed live in Tasks → GitHub issues (super admins): AxalNetwork/mail, AxalNetwork/StudioOS, DeFiScoring/website, GeneratedArt/platform, Scenographist/scenographist, GenerativeFinance/gefi, AlgoSize/platform, CatalystPod/platform and Tokenomic-org/website, editable there. A super admin tracks an issue as a task, opens an issue for a task, links an existing one, and closes or reopens it, each as an explicit action. Visibility is checked live: while a repository is public, opening an issue there needs a confirmation and email addresses are removed; once it is private, nothing changes in the app but the warning goes away. Set up:
+
+1. For each GitHub owner (AxalNetwork, DeFiScoring, GeneratedArt, Scenographist, GenerativeFinance, AlgoSize, CatalystPod, Tokenomic-org), create a fine-grained personal access token with access to that owner's repositories and **Issues: Read and write** (Metadata: read is added automatically). A fine-grained token covers one owner, hence one per owner; a GitHub App installed on each would work too.
+2. Store them as one Worker secret: `npx wrangler secret put GITHUB_ISSUES_TOKENS` with `{"AxalNetwork":"github_pat_…","AlgoSize":"github_pat_…",…}`. An owner without a token falls back to `GITHUB_TOKEN`. Tokens stay on the Worker; the browser never sees them.
+
+**Approvals.** Consequential actions wait in Tasks → Approvals: an email from the composer (*Ask for approval*), the Investor and LP messages bulk email holds, and a reply from a shared inbox. Each request is the exact content that will be sent, identified by its SHA-256. A reviewer approves, rejects (with a reason) or defers that version; any edit makes a new version that needs approval again; sending claims the approved version once, atomically, and sends what the server returns, never what is on screen. A failed or interrupted send is recorded and never retried automatically.
+
+| Kind | Approved by | Sent by |
+| --- | --- | --- |
+| Email, bulk campaign | An admin or super admin other than the requester (a super admin may approve their own) | The requester, from their mailbox |
+| Shared-inbox reply | A member who can send from that mailbox, other than the requester | That approver |
+
+Outreach sequences keep their own version-by-version approval in Outreach sequences; Approvals shows how many wait. Notifications are in the app (Tasks → Notifications and the sidebar count): assignments, tasks due within a day or overdue, requests to review, and decisions on your requests.
+
+D1 tables (migration `0013_tasks.sql`): `tasks`, `task_events`, `task_repos`, `approvals`, `approval_events`, `task_inbox_seen`. No email content is stored except what a request will send.
+
 ## Snooze
 
 **Snooze** in the reader hides a conversation until later today, tomorrow morning, the weekend, next week, or a date and time you pick (your browser's time zone). Gmail's API has no snooze, so Axal VC Mail does it in two parts:
@@ -271,6 +292,12 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `GET/POST/DELETE /api/snoozes` | Snoozed conversations of a mailbox you own or can open, with wake-up times (`serverWakes`: the cron brings them back) |
 | `GET /api/analytics/outreach?from=&to=` | Sequence figures: created, awaiting approval, accepted by Gmail, failed, unconfirmed, replied, bounce notices, opt-outs (delivery: unknown) |
 | `GET /api/shared/<mailbox>/summary?from=&to=` | Shared mailbox workload by status and member (members of the mailbox only) |
+| `GET/POST /api/tasks` · `GET/PATCH/DELETE /api/tasks/:id` · `GET …/:id/events` | Tasks (`scope`, `assignee`, `status`, `priority`, `due`, `thread`+`mailbox`); create (super admins); edit (`expectedVersion`, 409 on conflict; assignees change status only); history |
+| `GET /api/tasks/members` · `GET /api/tasks/inbox` · `POST /api/tasks/inbox/seen` · `POST /api/tasks/suggest` | Assignable members; notifications; mark read; AI action items from a conversation (not stored) |
+| `GET/PUT /api/tasks/github/repos` · `GET /api/tasks/github/issues` · `POST /api/tasks/github/track` | Repositories and their visibility (super admins edit); issues across them, live; track one as a task |
+| `GET/POST/DELETE /api/tasks/:id/github` · `POST …/github/link\|state` | The task's issue; open one (`confirmPublic` for a public repository); unlink; link an existing issue; close or reopen it |
+| `GET/POST /api/approvals` · `GET/PUT /api/approvals/:id` · `GET …/:id/events` | Queue (`scope=queue\|mine\|history`); request; read; edit (new version, back to pending); history with versions and hashes |
+| `POST /api/approvals/:id/decide\|execute\|result\|withdraw` | Approve, reject or defer a version (`version` + `contentHash`); claim the send once; record the outcome; withdraw |
 | `GET /api/mailboxes` | Shared mailboxes this member may open |
 | `GET /api/shared` | Shared mailboxes with connection, members, permissions and send-as addresses |
 | `GET /api/shared/<mailbox>/threads?ids=…` · `?status=&assignee=` | Team status, assignee and presence for conversations |

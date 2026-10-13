@@ -750,3 +750,30 @@ button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 
 .attachment-wrap { display: inline-flex; align-items: center; gap: 4px; }
 .trow.docs { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) 80px 80px 110px 70px; padding: 9px 14px; min-width: 700px; font-size: 13px; }
 .btn.disabled { opacity: .5; pointer-events: none; }
+
+/* Tasks & Approvals */
+.trow.tasks { grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) 84px 96px 130px; padding: 9px 14px; min-width: 680px; font-size: 13px; }
+.trow.issues { grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr) minmax(0, 1fr) 70px 120px; padding: 9px 14px; min-width: 760px; font-size: 13px; }
+.trow.approvals { grid-template-columns: minmax(0, 2fr) 130px minmax(0, 1fr) 140px 120px; padding: 9px 14px; min-width: 700px; font-size: 13px; }
+.trow.link-like { width: 100%; padding: 9px 14px; border-bottom: 1px solid var(--line-2); }
+.trow.link-like:hover, .trow.on { background: var(--surface-2); }
+.trow .user-cell b, .trow .user-cell a b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-panel { gap: 10px; }
+.task-desc { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.task-section { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line-2); }
+.task-form { display: flex; flex-direction: column; gap: 10px; }
+.tf-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.row-wrap > .tf-field { flex: 1 1 160px; }
+.tf-field .input, .tf-field .textarea { color: var(--text); font-size: 13px; }
+.tf-field .textarea { resize: vertical; }
+.task-modal { width: 600px; }
+.suggestion { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line-2); }
+.suggestion .check-row .input { flex: 1; }
+.reader-tasks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.reader-tasks .pill { cursor: pointer; border: 1px solid var(--line); }
+.approval-msg { border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; }
+.approval-msg > .input { margin: 8px 12px; }
+.approval-body { margin: 0; padding: 12px; font: inherit; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+@media (max-width: 760px) {
+  .tf-field { flex-basis: 100%; }
+}

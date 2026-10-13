@@ -16,6 +16,8 @@ interface Props {
   /** Opens a reply to the conversation with an assistant draft. */
   onDraftReply: (threadId: string) => void;
   onGo: (view: 'analytics' | 'sequences') => void;
+  /** Make a task from a follow-up (super admins, with the backend). */
+  onCreateTask?: (threadId: string, title: string) => void;
 }
 
 const DAY = 86_400_000;
@@ -47,7 +49,7 @@ function audit(live: boolean): { name: string; status: Status; note: string }[] 
 const toItem = (t: ThreadSummary): TriageItem => ({ id: t.id, subject: t.subject, from: t.from, email: t.email, snippet: t.snippet, labels: t.labels, when: t.time });
 const triageKey = (t: ThreadSummary) => t.id + ':' + (t.date || t.time);
 
-export function Automations({ provider, orgDomain, assistant, dismissals, onOpen, onDraftReply, onGo }: Props) {
+export function Automations({ provider, orgDomain, assistant, dismissals, onOpen, onDraftReply, onGo, onCreateTask }: Props) {
   const { stats: s, loading, error, reload } = useStats(provider, 30, orgDomain);
   const now = Date.now();
   const [dismissed, setDismissed] = useState<Dismissed>({ follow_up: [], reply: [], triage: [] });
@@ -109,7 +111,8 @@ export function Automations({ provider, orgDomain, assistant, dismissals, onOpen
               <span className="muted" style={{ fontSize: 12.5 }}>Conversations where you wrote last, more than 3 days ago. Draft a follow-up, review it, send it yourself. A dismissed one comes back only if the conversation moves on.</span>
               <Rows items={followUps.slice(0, 10)} empty="No follow-ups due." onOpen={onOpen}
                 reason={w => 'You wrote last, ' + ago(w.since, now) + '; no reply from ' + w.who + '.'}
-                action={{ label: 'Draft follow-up', run: onDraftReply }} onDismiss={w => dismiss('follow_up', waitingKey(w.id, w.since))} />
+                action={{ label: 'Draft follow-up', run: onDraftReply }} onDismiss={w => dismiss('follow_up', waitingKey(w.id, w.since))}
+                onTask={onCreateTask ? w => onCreateTask(w.id, 'Follow up with ' + w.who + ': ' + w.subject) : undefined} />
             </div>
 
             <div className="card panel">
@@ -291,9 +294,9 @@ function Mini({ label, value }: { label: string; value: number }) {
   return <div className="an-tile card"><span className="an-tile-label">{label}</span><b className="an-tile-value">{value}</b></div>;
 }
 
-function Rows({ items, empty, onOpen, action, reason, onDismiss }: {
+function Rows({ items, empty, onOpen, action, reason, onDismiss, onTask }: {
   items: WaitingItem[]; empty: string; onOpen: (id: string) => void; action: { label: string; run: (id: string) => void };
-  reason: (w: WaitingItem) => string; onDismiss: (w: WaitingItem) => void;
+  reason: (w: WaitingItem) => string; onDismiss: (w: WaitingItem) => void; onTask?: (w: WaitingItem) => void;
 }) {
   if (!items.length) return <span className="faint" style={{ fontSize: 12.5 }}>{empty}</span>;
   return (
@@ -303,6 +306,7 @@ function Rows({ items, empty, onOpen, action, reason, onDismiss }: {
           <button className="an-row-main link-like" onClick={() => onOpen(w.id)}><b>{w.subject}</b><span>{reason(w)}</span></button>
           <span style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
             <button className="btn sm" onClick={() => action.run(w.id)}>{action.label}</button>
+            {onTask && <button className="btn sm" onClick={() => onTask(w)}>Create task</button>}
             <button className="btn sm ghost" onClick={() => onDismiss(w)} aria-label={'Dismiss ' + w.subject}>Dismiss</button>
           </span>
         </div>

@@ -7,6 +7,9 @@ import * as contacts from './contacts';
 import * as shared from './shared';
 import * as snoozes from './snoozes';
 import * as documents from './documents';
+import * as tasks from './tasks';
+import * as approvals from './approvals';
+import { githubEnabled } from './github';
 import { outreachStats } from './outreach';
 import * as assistant from './assistant';
 import * as admin from './admin';
@@ -62,7 +65,8 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
         assistant: !!env.ANTHROPIC_API_KEY,
         notes: !!env.DB,
         session: !!env.DB,
-        bugReports: bugReportsEnabled(env)
+        bugReports: bugReportsEnabled(env),
+        github: githubEnabled(env)
       },
       200,
       { 'Cache-Control': 'public, max-age=60' }
@@ -108,6 +112,8 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
+  if (path === '/api/tasks' || path.startsWith('/api/tasks/')) return tasks.route(req, env, user, url);
+  if (path === '/api/approvals' || path.startsWith('/api/approvals/')) return approvals.route(req, env, user, url);
   if (path === '/api/snoozes') return snoozes.route(req, env, user, url);
   if (path === '/api/documents' || path.startsWith('/api/documents/')) return documents.route(req, env, user, url);
   if (path === '/api/shared' || path.startsWith('/api/shared/')) return shared.route(req, env, user, url);

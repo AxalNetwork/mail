@@ -13,7 +13,7 @@ export const VIEW_TITLES: Record<View, string> = {
 
 interface Props {
   view: View;
-  counts: FolderCounts & { internal?: number };
+  counts: FolderCounts & { internal?: number; tasks?: number };
   open: boolean;
   hide: Partial<Record<View, boolean>>;
   footer: string;
@@ -49,7 +49,7 @@ export function Sidebar({ view, counts, open, hide, footer, onGo, onCompose }: P
         {item('contacts')}
         {item('documents')}
         {item('automations')}
-        {item('tasks')}
+        {item('tasks', counts.tasks)}
         {item('analytics')}
       </div>
       <div className="nav-group">

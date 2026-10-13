@@ -482,3 +482,55 @@ export async function analyzeDocument(env: Env, user: User, doc: { name: string;
   });
   return { summary: String(out.summary || '').slice(0, 1500), items, missing: (out.missing || []).filter(f => (DOC_FIELDS as readonly string[]).includes(f)), source: doc.kind };
 }
+
+// ---------- action items for Tasks ----------
+
+const TASKS_SCHEMA = {
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'A short task title in the imperative, for the signed-in user or their team.' },
+          detail: { type: 'string', description: 'One or two sentences of context from the conversation.' },
+          kind: { type: 'string', enum: ['request', 'commitment', 'follow_up'], description: 'request = someone asks the team for something; commitment = someone on the team said they would do it; follow_up = the team is waiting on someone.' },
+          quote: { type: 'string', description: 'The exact words in the conversation this comes from, copied verbatim.' },
+          due_text: { type: 'string', description: 'A deadline exactly as the conversation states it (e.g. "by Friday"), or an empty string when none is stated. Never infer one.' }
+        },
+        required: ['title', 'detail', 'kind', 'quote', 'due_text'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['items'],
+  additionalProperties: false
+};
+
+/** Suggested tasks from a conversation. Nothing is stored: the member reviews each one before it becomes a task. */
+export async function suggestTasks(env: Env, user: User, body: { thread?: ThreadInput; userName?: string }) {
+  if (!env.ANTHROPIC_API_KEY) throw new HttpError(503, 'The assistant is not connected on this server.', 'assistant_off');
+  if (!body.thread?.messages?.length) throw new HttpError(400, 'thread is required');
+  const t = body.thread;
+  const out = await structured<{ items: { title: string; detail: string; kind: string; quote: string; due_text: string }[] }>(
+    env,
+    `${who(body.userName, user)}\n\n${threadBlock(t)}\n\nList the concrete action items in this conversation for the signed-in user or the Axal VC team: what someone asks them to do, what they committed to, and what they are waiting on. Only items the conversation states; none is a valid answer. A suggestion is not a commitment: describe what the email says, not what the team must do.`,
+    TASKS_SCHEMA,
+    'low'
+  );
+  const haystack = t.messages.map(m => m.text).join('\n').replace(/\s+/g, ' ').toLowerCase();
+  return {
+    suggestions: out.items.slice(0, 8).map(i => {
+      const quote = String(i.quote || '').slice(0, 400);
+      return {
+        title: String(i.title || '').slice(0, 200), detail: String(i.detail || '').slice(0, 1000),
+        kind: ['request', 'commitment', 'follow_up'].includes(i.kind) ? i.kind : 'request',
+        quote,
+        // A quote that isn't in the emails is flagged, not trusted.
+        quoteVerified: !!quote && haystack.includes(quote.replace(/\s+/g, ' ').toLowerCase()),
+        dueText: String(i.due_text || '').slice(0, 100)
+      };
+    }).filter(s => s.title)
+  };
+}

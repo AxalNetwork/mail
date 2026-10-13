@@ -36,6 +36,12 @@ interface Props {
     onSave: (a: AttachmentRef, category: string) => void;
     onOpen: () => void;
   } | null;
+  /** Tasks linked to this conversation; onCreate only for those who create tasks (super admins). */
+  tasks?: {
+    linked: { id: number; title: string; status: string; assignee: string | null }[];
+    onCreate?: () => void;
+    onOpen: (id: number) => void;
+  } | null;
 }
 
 export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
@@ -64,6 +70,7 @@ export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
             ? <button className="btn sm" onClick={p.onUnsnooze} title={'Snoozed until ' + formatUntil(t.snoozedUntil, Date.now())}>Unsnooze</button>
             : <SnoozeMenu disabled={!canAct || !p.canSnooze} onPick={p.onSnooze}
               title={p.canSnooze ? undefined : 'Snooze needs the Axal VC Mail backend'} />}
+          {p.tasks?.onCreate && <button className="btn sm" onClick={p.tasks.onCreate}>Create task</button>}
           <button className="btn sm danger" onClick={p.onDelete} disabled={!canAct}>Delete</button>
         </div>
         <h2>{t.subject}</h2>
@@ -72,6 +79,16 @@ export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
           {t.labels.map(l => <span key={l} className="pill">{l}</span>)}
           <span>{t.linkText}</span>
         </div>
+        {p.tasks && p.tasks.linked.length > 0 && (
+          <div className="reader-tasks" aria-label="Tasks from this email">
+            <span className="mono-label">Tasks</span>
+            {p.tasks.linked.map(x => (
+              <button key={x.id} className={'pill' + (x.status === 'completed' ? ' ok' : '')} onClick={() => p.tasks!.onOpen(x.id)} title="Open in Tasks & Approvals">
+                {x.status === 'completed' ? '✓ ' : ''}{x.title}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       <div className="reader-body">
         {p.shared}

@@ -25,6 +25,8 @@ export interface Env {
   TOKEN_ENCRYPTION_KEY?: string;
   /** Secret. GitHub token that may create issues; enables in-app bug reports. */
   GITHUB_TOKEN?: string;
+  /** Secret. JSON {"owner": "token"}: GitHub tokens for Tasks, one per owner (falls back to GITHUB_TOKEN). */
+  GITHUB_ISSUES_TOKENS?: string;
   /** owner/repo that bug reports go to (default AxalNetwork/mail). */
   GITHUB_REPO?: string;
   /** Secret. Enables the assistant endpoints. */
