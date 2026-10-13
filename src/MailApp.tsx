@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Account, AiInsight, Folder, AttachmentRef, Category, Identity, Mailbox, OutgoingMessage, SentResult, Thread, ThreadSummary } from './types';
+import type { Account, AiInsight, Person, Folder, AttachmentRef, Category, Identity, Mailbox, OutgoingMessage, SentResult, Thread, ThreadSummary } from './types';
 import type { FolderCounts, MailProvider } from './providers/types';
 import type { Assistant } from './assistant/types';
 import { Header } from './components/Header';
@@ -21,6 +21,8 @@ import type { SequencesApi } from './lib/sequencesApi';
 import { LocalDismissals, type DismissalStore } from './lib/automationsApi';
 import type { NotesStore } from './providers/gmail/notes';
 import { InternalPage } from './components/internal/InternalPage';
+import { ContactsPage } from './components/contacts/ContactsPage';
+import type { ContactsApi } from './lib/contactsApi';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
@@ -52,6 +54,8 @@ interface Props {
   notes?: NotesStore | null;
   /** Dismissed automation suggestions (backend, or this device). */
   dismissals?: DismissalStore | null;
+  /** Contacts & Relationships records (backend). */
+  contacts?: ContactsApi | null;
 }
 
 interface ListState {
@@ -63,13 +67,15 @@ interface ListState {
 
 interface OpenOpts {
   replyTo?: Thread;
+  /** New message to these people. */
+  to?: Person[];
   all?: boolean;
   ai?: boolean;
   forward?: Thread;
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts }: Props) {
   const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
@@ -233,7 +239,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
     }
 
     const t = o.replyTo || o.forward;
-    if (!t) { setCompose(newCompose({ fromId: fallbackId })); return; }
+    if (!t) { setCompose(newCompose({ fromId: fallbackId, to: o.to || [] })); return; }
     const msgs = t.messages;
     const last = msgs[msgs.length - 1];
     if (o.replyTo && last) {
@@ -435,8 +441,16 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 else toast({ text: 'That conversation isn’t in this mailbox. It may be in a teammate’s or a shared mailbox.', error: true });
               }} />
           )}
+          {view === 'contacts' && (
+            <ContactsPage api={contacts || null} provider={provider} assistant={assistant}
+              orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''}
+              myEmails={[boot.account.email, ...boot.identities.map(i => i.addr)]}
+              onOpenThread={id => go('inbox', id)}
+              onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))}
+              onWrite={(email, name) => openCompose({ to: [{ name, email, org: '' }] })} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

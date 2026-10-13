@@ -141,6 +141,21 @@ Every conversation has an **Internal** panel under its messages: notes (context 
 
 Notes are keyed by the conversation's first `Message-ID`, so teammates' copies of the same thread share one discussion. The internal note in the composer is saved here on send and never included in the message.
 
+## Contacts & Relationships
+
+**Workspace → Contacts & Relationships** keeps the people and organizations the team chose to track, linked to email without copying it.
+
+- **People:** name, any number of email addresses (an address belongs to one record), role, organization, website and LinkedIn URL (only when someone types them), tags, relationship owner and notes. Search, filter by tag or owner, archive and restore, and export what is listed to CSV (notes are left out). Records with the same name are flagged as possible duplicates and can be merged after a confirmation: addresses, tags, notes and recorded events move to the record you keep, and the other one is archived.
+- **Organizations:** name, email domain, website, type (portfolio company, prospect, LP / investor, co-investor, service provider, corporate, other), tags, owner and notes, with their people. "Atlas Systems, Inc." and "atlas systems" are the same name, and a second organization with the same name or domain is refused, with a link to the existing one.
+- **Email history:** for each record, the conversations in your own mailbox over the last 90 days, read from the same metadata Analytics uses (who wrote to whom and when; never content). The indicators are plain counts: last interaction, messages in 30 days, conversations in 90 days, waiting on you, follow-ups due, recorded introductions, and **stale**, a rule you set (default 60 days without email) or turn off. There is no relationship score.
+- **Recorded events:** introductions, meetings and notes someone records by hand, optionally linked to an email. Nothing is inferred; mutual connections are never guessed.
+- **AI (needs `ANTHROPIC_API_KEY`):** *Summarize relationship* and *Prepare meeting briefing* read the record and your latest 6 conversations with the person. Facts, open questions and prior commitments must cite a conversation or the record (the Worker drops any that don't), and the model's own inferences are listed separately. *Draft follow-up* opens a reply you review and send yourself.
+- **Suggestions:** people you have exchanged email with both ways in the last 90 days, outside the firm, not bulk mail and not already a record, with the conversation they came from. Nothing is created until you review the form; you can also add the address to an existing record, or dismiss it (remembered on this device). No outside lookup or enrichment is made.
+
+A record is **team** (every member sees and edits it) or **private** (only its creator and relationship owner). Only those two can change the owner or visibility. The Worker filters every read and write on this, so a private record answers 404 to anyone else, and a team and a private record can't be merged. Records live in D1 (migration `0009_contacts.sql`); without the backend the page says so.
+
+Limitations: email history covers the signed-in member's own mailbox and the last 90 days (up to 500 conversations), not teammates' mailboxes or shared inboxes. Internal notes stay on their conversations rather than being copied to records, and tasks will be linked once Tasks & Approvals (issue #2) exists.
+
 ## Analytics and AI Automations
 
 **Analytics** (Workspace → Analytics) reads the metadata of your recent conversations (senders, recipients, times and bulk-mail headers; never bodies) straight from Gmail into the browser, for 7, 30 or 90 days (up to 300 or 500 conversations), and computes everything there. Nothing is stored. It shows volume per day, your and their median response times, message and contact reply rates, who is waiting on whom, sending hours and top contacts, with the definitions on each tile. A **Deliverability** panel checks the domain's MX, SPF, DKIM (Google selector) and DMARC records through the Worker (`GET /api/analytics/deliverability`, organization domains only). Opens, clicks, bounces and inbox placement aren't measured: a mailbox can't see them, and tracking pixels or links would need recipients' consent.
@@ -193,6 +208,11 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/assistant/persona` | Bulk email subject and body for one persona, with merge tokens |
 | `POST /api/assistant/classify` | Inbox manager suggestions for up to 25 conversations (metadata and preview); unknown ids are dropped |
 | `POST /api/assistant/briefing` | Daily briefing: summary, priorities and explicit commitments, each citing a given conversation |
+| `GET/POST /api/contacts` · `GET/PATCH /api/contacts/:id` | Contacts you may see (`q`, `tag`, `org`, `owner`, `archived`); create; read with recorded events and possible duplicates; edit |
+| `POST /api/contacts/:id/archive\|merge` · `GET /api/contacts/duplicates` | Archive or restore; merge another record into this one; groups of same-name records |
+| `POST /api/contacts/:id/events` · `DELETE …/events/:eid` | Record an introduction, meeting or note; remove your own |
+| `GET/POST /api/organizations` · `GET/PATCH /api/organizations/:id` | Organizations (`q`, `type`, `archived`), create, read with people, edit or archive |
+| `POST /api/assistant/relationship` | Relationship summary or meeting briefing (`mode`), facts cited to conversations or the record |
 | `GET/POST/DELETE /api/automations/dismissed` | Dismissed follow-up, reply and inbox suggestions (`{ kind, key }`) |
 | `POST /api/bug-report` | File a bug report as a GitHub issue |
 | `GET/POST/DELETE /api/sequences/sender` | Sending grant status, connect (authorization code), disconnect |
@@ -241,7 +261,7 @@ src/                      Frontend
   assistant/              Demo, offline and HTTP (backend) assistant implementations
   lib/                    Pure logic: CSV, bulk merge, send checks, MIME builder, signature HTML
   components/             LoginScreen, Header, Sidebar, ThreadList, ThreadReader, AssistantPanel,
-                          composer/, bulk/, admin/
+                          composer/, bulk/, admin/, analytics/, automations/, internal/, contacts/
   styles/app.css          Design tokens and component styles
 worker/                   Backend (Cloudflare Worker)
   src/index.ts            Router; non-/api paths are served from dist/ by Cloudflare
@@ -254,6 +274,7 @@ worker/                   Backend (Cloudflare Worker)
   src/config.ts           OAuth client ID (Worker variable or build-time fallback)
   src/assistant.ts        Claude calls and prompts
   src/notes.ts            Internal notes, comments, mentions and activity (D1)
+  src/contacts.ts         Contacts, organizations, merges and recorded events, with visibility checks (D1)
   migrations/             D1 schema
 wrangler.jsonc            Worker, assets, custom domain, D1 binding
 public/_headers           Security headers for the static frontend

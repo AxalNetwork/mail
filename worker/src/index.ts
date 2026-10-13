@@ -3,6 +3,7 @@ import { allowedDomains, authenticate } from './auth';
 import { HttpError, errorResponse, json, readJson } from './http';
 import * as notes from './notes';
 import * as automations from './automations';
+import * as contacts from './contacts';
 import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
@@ -87,6 +88,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/internal/members' && method === 'GET') return json({ members: await notes.mentionable(env) });
 
   if (path.startsWith('/api/automations/')) return automations.route(req, env, user, url);
+  if (path === '/api/contacts' || path.startsWith('/api/contacts/') || path === '/api/organizations' || path.startsWith('/api/organizations/')) return contacts.route(req, env, user, url);
 
   if (path === '/api/sequences/sender') {
     if (method === 'GET') return json({ sender: await senderStatus(env, user) });
@@ -112,6 +114,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
       case 'persona': return json(await assistant.persona(env, user, await readJson(req)));
       case 'classify': return json(await assistant.classify(env, user, await readJson(req)));
       case 'briefing': return json(await assistant.briefing(env, user, await readJson(req)));
+      case 'relationship': return json(await assistant.relationship(env, user, await readJson(req)));
     }
   }
 

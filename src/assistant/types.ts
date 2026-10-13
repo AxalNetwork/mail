@@ -46,6 +46,20 @@ export interface Briefing {
   commitments: { id: string; text: string }[];
 }
 
+/** Conversation text the relationship assistant reads, from the user's own mailbox. */
+export interface RelationshipConversation { id: string; subject: string; messages: { from: string; fromMe: boolean; at: number; text: string }[] }
+export interface Sourced { text: string; sources: string[] }
+/** A relationship summary or meeting briefing. Facts cite a conversation id or "record"; inferences are the model's own. */
+export interface RelationshipBrief {
+  mode: 'summary' | 'meeting';
+  summary: string;
+  facts: Sourced[];
+  inferences: Sourced[];
+  openQuestions: Sourced[];
+  commitments: Sourced[];
+  nextSteps: string[];
+}
+
 export interface Assistant {
   /** A live model is connected (otherwise only offline templates are available). */
   readonly live: boolean;
@@ -59,4 +73,6 @@ export interface Assistant {
   classify(items: TriageItem[]): Promise<Classification[] | null>;
   /** Today's briefing from these conversations (null: needs the live assistant). */
   briefing(items: TriageItem[], followUps: number): Promise<Briefing | null>;
+  /** Summarize a relationship or prepare a meeting (null: needs the live assistant). */
+  relationship(contactId: number, conversations: RelationshipConversation[], mode: 'summary' | 'meeting'): Promise<RelationshipBrief | null>;
 }
