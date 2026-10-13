@@ -1,6 +1,6 @@
 // In-memory stand-ins for Google Drive and the Worker's documents API (mocks, not real Drive).
 import type { DriveFile } from '../../lib/drive';
-import { Documents, type DocRecord, type DocumentsBackend, type Settings } from '../../lib/documents';
+import { Documents, type Extraction } from '../../lib/documents';
 import { DriveNotConnected } from '../../providers/gmail/driveAuth';
 
 export function fakeDrive(account = 'julian@axal.vc') {
@@ -11,8 +11,16 @@ export function fakeDrive(account = 'julian@axal.vc') {
     revoked: false,
     account: vi.fn(async () => account),
     get: vi.fn(async (id: string) => { const f = files.get(id); return f && !f.trashed ? f : null; }),
+    findFolder: vi.fn(async (key: string, parent?: string) =>
+      [...files.values()].find(f => f.appProperties?.axal === key && !f.trashed && (!parent || f.parents?.includes(parent))) || null),
+    foldersIn: vi.fn(async (parent: string) => {
+      if (drive.revoked) throw new DriveNotConnected('Google Drive no longer accepts Axal VC Mail’s access. Reconnect Google Drive.');
+      return [...files.values()].filter(f => !f.trashed && f.mimeType === 'application/vnd.google-apps.folder' && f.parents?.includes(parent));
+    }),
+    byProperty: vi.fn(async (key: string, value: string) => [...files.values()].filter(f => f.appProperties?.[key] === value && !f.trashed)),
+    exportPdf: vi.fn(async () => new Blob(['%PDF-exported'], { type: 'application/pdf' })),
     folder: vi.fn(async (name: string, key: string, parent?: string) => {
-      const hit = [...files.values()].find(f => f.appProperties?.axal === key && !f.trashed);
+      const hit = [...files.values()].find(f => f.appProperties?.axal === key && !f.trashed && (!parent || f.parents?.includes(parent)));
       if (hit) return hit;
       const f: DriveFile = { id: 'fold' + ++n, name, mimeType: 'application/vnd.google-apps.folder', createdTime: new Date().toISOString(), modifiedTime: '', parents: parent ? [parent] : [], appProperties: { axal: key } };
       files.set(f.id, f);
@@ -36,43 +44,13 @@ export function fakeDrive(account = 'julian@axal.vc') {
   return drive;
 }
 
-export function fakeBackend() {
-  let n = 0;
-  let settings: Settings | null = null;
-  const rows: DocRecord[] = [];
-  const keys = new Map<string, number>();
-  const backend: DocumentsBackend & { rows: DocRecord[] } = {
-    rows,
-    settings: vi.fn(async () => settings),
-    saveSettings: vi.fn(async s => (settings = s)),
-    list: vi.fn(async (src?: string) => rows.filter(r => !src || r.source?.messageId === src)),
-    record: vi.fn(async d => {
-      if (d.sourceKey && keys.has(d.sourceKey)) {
-        const hit = rows.find(r => r.id === keys.get(d.sourceKey!));
-        if (hit && hit.driveFileId !== d.driveFileId) return { document: hit, existing: true };
-      }
-      let r = rows.find(x => x.driveFileId === d.driveFileId);
-      if (!r) {
-        r = { id: ++n, driveFileId: d.driveFileId, name: d.name, mimeType: d.mimeType || '', size: d.size ?? null, category: d.category || '', folderId: d.folderId || '',
-          source: d.sourceMessageId ? { mailbox: d.sourceMailbox || '', threadId: d.sourceThreadId || '', messageId: d.sourceMessageId } : null,
-          createdAt: Date.now(), updatedAt: Date.now(), missing: false, extraction: { status: 'none', at: null, result: null } };
-        rows.push(r);
-      }
-      if (d.sourceKey) keys.set(d.sourceKey, r.id);
-      return { document: r, existing: false };
-    }),
-    byKey: vi.fn(async key => rows.find(r => r.id === keys.get(key)) || null),
-    update: vi.fn(async (id, p) => { const r = rows.find(x => x.id === id)!; Object.assign(r, p.missing === undefined ? p : { ...p, missing: !!p.missing }); return r; }),
-    remove: vi.fn(async id => { const i = rows.findIndex(r => r.id === id); if (i >= 0) rows.splice(i, 1); for (const [k, v] of keys) if (v === id) keys.delete(k); }),
-    analyze: vi.fn(async id => rows.find(r => r.id === id)!)
-  };
-  return backend;
-}
-
 export function fakeDocuments(o: { account?: string } = {}) {
   const drive = fakeDrive(o.account);
-  const backend = fakeBackend();
   const auth = { connected: false, connect: vi.fn(async () => { auth.connected = true; return 't'; }), disconnect: vi.fn(() => { auth.connected = false; }) };
-  const docs = new Documents(drive as never, backend, auth, async () => 'julian@axal.vc');
-  return { docs, drive, backend, auth };
+  const extract = vi.fn(async (_b: { mimeType: string; name: string; data?: string; text?: string }): Promise<Extraction> => ({
+    summary: 'Seed deck.', source: 'pdf', missing: ['revenue'],
+    items: [{ field: 'company_name', value: 'Northstar AI', kind: 'stated', page: 1, quote: 'Northstar AI', quoteVerified: null }]
+  }));
+  const docs = new Documents(drive as never, auth, async () => 'julian@axal.vc', extract);
+  return { docs, drive, auth, extract };
 }

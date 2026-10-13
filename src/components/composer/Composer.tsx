@@ -5,6 +5,8 @@ import type { Assistant, AiResult, RewriteMode } from '../../assistant/types';
 import type { ComposeState } from './state';
 import { RecipientField } from './RecipientField';
 import { SendConfirm } from './SendConfirm';
+import { DriveDocuments } from './DriveDocuments';
+import type { Documents } from '../../lib/documents';
 import { EmailSignature } from '../EmailSignature';
 import { usePopover } from '../usePopover';
 import { errorText, useToast } from '../Toast';
@@ -35,6 +37,9 @@ interface Props {
   onSent: (r: SentResult, msg: OutgoingMessage) => void;
   onDraftsChanged: () => void;
   onOpenDraft: (draftId: string) => void;
+  /** Documents in the member's Google Drive, to attach (when Drive is connected). */
+  documents?: Documents | null;
+  onOpenDocuments?: () => void;
   /** Send this message for approval instead of sending it (Tasks & Approvals). */
   onRequestApproval?: (msg: OutgoingMessage) => Promise<void>;
 }
@@ -78,6 +83,7 @@ export function Composer(p: Props) {
   const fromPop = usePopover();
   const tplPop = usePopover();
   const docPop = usePopover();
+  const drivePop = usePopover();
   const schedPop = usePopover();
 
   const identity = identities.find(i => i.id === c.fromId) || identities[0];
@@ -305,7 +311,7 @@ export function Composer(p: Props) {
   const addAttachment = (a: Omit<ComposeAttachment, 'id'>) =>
     patch(x => ({ attachments: [...x.attachments, { ...a, id: Math.random().toString(36).slice(2) }] }));
 
-  const onFiles = (files: FileList | null) => {
+  const onFiles = (files: FileList | File[] | null) => {
     Array.from(files || []).forEach(f => addAttachment({
       name: f.name, ext: fileExt(f.name), size: f.size, mime: f.type || 'application/octet-stream', cls: 'Not classified', secure: false,
       source: { kind: 'file', blob: f }
@@ -552,7 +558,18 @@ export function Composer(p: Props) {
           <span className="sep" />
           <button className="btn ghost" title="Attach file" onClick={() => fileRef.current?.click()}>⎘ Attach</button>
           <input type="file" multiple ref={fileRef} style={{ display: 'none' }} onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
-          {caps.documents && (
+          {p.documents?.connected && (
+            <div style={{ position: 'relative' }} ref={drivePop.ref}>
+              <button className="btn ghost" onClick={drivePop.toggle} aria-expanded={drivePop.open}>▤ Document</button>
+              {drivePop.open && (
+                <DriveDocuments docs={p.documents} onOpenDocuments={p.onOpenDocuments} onPick={f => {
+                  onFiles([f]);
+                  drivePop.setOpen(false);
+                }} />
+              )}
+            </div>
+          )}
+          {caps.documents && !p.documents?.connected && (
             <div style={{ position: 'relative' }} ref={docPop.ref}>
               <button className="btn ghost" onClick={docPop.toggle} aria-expanded={docPop.open}>▤ Document</button>
               {docPop.open && (

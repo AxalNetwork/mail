@@ -626,6 +626,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           onSent={onSent}
           onDraftsChanged={() => { refreshCounts(); if (view === 'drafts') setReloadTick(t => t + 1); }}
           onOpenDraft={id => openCompose({ draftId: id })}
+          documents={documents} onOpenDocuments={() => go('documents')}
           onRequestApproval={tasks ? async msg => {
             const shared = !!provider.mailbox && provider.mailbox !== boot.account.email.toLowerCase();
             await tasks.requestApproval({

@@ -66,10 +66,25 @@ export class Drive {
     return out;
   }
 
+  /** The folder this app tagged `key` (under `parent`, when given), if it exists. */
+  async findFolder(key: string, parent?: string): Promise<DriveFile | null> {
+    return (await this.search([`mimeType = ${q(FOLDER)}`, `appProperties has { key='axal' and value=${q(key)} }`, ...(parent ? [`${q(parent)} in parents`] : [])], 10))[0] || null;
+  }
+
+  /** Folders directly inside `parent`. */
+  foldersIn(parent: string): Promise<DriveFile[]> {
+    return this.search([`mimeType = ${q(FOLDER)}`, `${q(parent)} in parents`]);
+  }
+
+  /** Files this app tagged with the app property `key` = `value`. */
+  byProperty(key: string, value: string, max = 50): Promise<DriveFile[]> {
+    return this.search([`appProperties has { key=${q(key)} and value=${q(value)} }`], max);
+  }
+
   /** The folder tagged `key`, created under `parent` only if it doesn't exist yet. */
   async folder(name: string, key: string, parent?: string): Promise<DriveFile> {
-    const found = await this.search([`mimeType = ${q(FOLDER)}`, `appProperties has { key='axal' and value=${q(key)} }`, ...(parent ? [`${q(parent)} in parents`] : [])], 10);
-    if (found.length) return found[0];
+    const found = await this.findFolder(key, parent);
+    if (found) return found;
     return this.call<DriveFile>(API + '/files', { query: { fields: FIELDS }, json: { name, mimeType: FOLDER, parents: parent ? [parent] : undefined, appProperties: { axal: key } } });
   }
 
@@ -106,6 +121,12 @@ export class Drive {
   /** Move to Drive's trash (recoverable there for 30 days), rather than deleting outright. */
   trash(id: string) {
     return this.call<DriveFile>(API + '/files/' + id, { method: 'PATCH', query: { fields: FIELDS }, json: { trashed: true } });
+  }
+
+  /** A Google Docs, Sheets or Slides file as PDF (they have no bytes of their own to download). */
+  async exportPdf(id: string): Promise<Blob> {
+    const res = await this.call<Response>(API + '/files/' + id + '/export', { query: { mimeType: 'application/pdf' }, raw: true });
+    return res.blob();
   }
 
   async download(id: string): Promise<Blob> {
