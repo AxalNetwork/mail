@@ -1,6 +1,7 @@
 export class HttpError extends Error {
   /** `code` lets the frontend tell cases apart, e.g. not_linked vs suspended. */
-  constructor(readonly status: number, message: string, readonly code?: string) {
+  /** `extra` is merged into the error response, e.g. the current state on a conflict. */
+  constructor(readonly status: number, message: string, readonly code?: string, readonly extra?: Record<string, unknown>) {
     super(message);
   }
 }
@@ -21,7 +22,7 @@ export function json(data: unknown, status = 200, headers: Record<string, string
 const SCHEMA_BEHIND = /no such (table|column)|has no column named/i;
 
 export function errorResponse(e: unknown): Response {
-  if (e instanceof HttpError) return json({ error: e.message, ...(e.code ? { code: e.code } : {}) }, e.status);
+  if (e instanceof HttpError) return json({ ...e.extra, error: e.message, ...(e.code ? { code: e.code } : {}) }, e.status);
   if (e instanceof Error && SCHEMA_BEHIND.test(e.message)) {
     console.error('Database schema is behind the code:', e.message);
     return json({ error: 'This feature needs a database update that hasn’t been applied yet. An administrator runs the pending migrations (npm run db:migrate).', code: 'schema_outdated' }, 503);

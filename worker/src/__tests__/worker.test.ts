@@ -10,12 +10,13 @@ import { runDue } from '../sequences';
 import { clearSharedCache } from '../shared';
 import { runSnoozes, wakeReason } from '../snoozes';
 import { fromHeader } from '../mailboxes';
+import { clearGithubCache } from '../github';
 import type { Env } from '../env';
 
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -42,6 +43,8 @@ let gmailCalls: { url: string; method: string; auth: string | null; body: string
 let delegationError: string | null;
 let githubCalls: { url: string; auth: string | null; body: Record<string, unknown> }[];
 let githubStatus: number[];
+type GhIssue = { number: number; title: string; state: string; html_url: string; labels: { name: string }[]; assignees: { login: string }[]; user: { login: string }; created_at: string; updated_at: string; pull_request?: unknown };
+let githubRepos: Record<string, { private: boolean; token?: string; issues: GhIssue[] }>;
 let sends: { raw: string; threadId?: string; auth: string | null }[];
 let sendMode: string[];
 let threads: Record<string, unknown[]>;
@@ -116,12 +119,26 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
       };
       return Response.json({ Answer: records[name + '/' + type] || [] });
     }
+    if (url.hostname === 'api.github.com' && req.method !== 'POST') {
+      const auth = req.headers.get('Authorization');
+      githubCalls.push({ url: url.pathname + url.search, auth, body: req.method === 'GET' ? {} : await req.json() as Record<string, unknown> });
+      const m = /^\/repos\/([^/]+\/[^/]+)(\/issues(?:\/(\d+))?)?$/.exec(url.pathname);
+      const repo = m && Object.entries(githubRepos).find(([k]) => k.toLowerCase() === m[1].toLowerCase());
+      if (!m || !repo || (repo[1].token && auth !== 'Bearer ' + repo[1].token)) return Response.json({ message: 'Not Found' }, { status: 404 });
+      const [name, r] = repo;
+      if (!m[2]) return Response.json({ full_name: name, private: r.private, html_url: 'https://github.com/' + name, has_issues: true });
+      if (!m[3]) return Response.json(r.issues);
+      const issue = r.issues.find(i => i.number === Number(m[3]));
+      if (!issue) return Response.json({ message: 'Not Found' }, { status: 404 });
+      if (req.method === 'PATCH') issue.state = String(githubCalls[githubCalls.length - 1].body.state);
+      return Response.json(issue);
+    }
     if (url.hostname === 'api.github.com') {
       const body = await req.json() as Record<string, unknown>;
       githubCalls.push({ url: url.pathname, auth: req.headers.get('Authorization'), body });
       const status = githubStatus.shift() ?? 201;
       return status === 201
-        ? Response.json({ number: 41 + githubCalls.length, html_url: 'https://github.com/AxalNetwork/mail/issues/' + (41 + githubCalls.length) }, { status })
+        ? Response.json({ number: 41 + githubCalls.length, title: body.title, state: 'open', html_url: 'https://github.com' + url.pathname.replace(/^\/repos/, '') + '/' + (41 + githubCalls.length) }, { status })
         : Response.json({ message: 'Validation Failed' }, { status });
     }
     if (url.hostname === 'api.anthropic.com') {
@@ -167,6 +184,8 @@ beforeEach(() => {
   delegationError = null;
   githubCalls = [];
   githubStatus = [];
+  githubRepos = {};
+  clearGithubCache();
   sends = [];
   sendMode = [];
   threads = {};
@@ -203,7 +222,7 @@ describe('routing', () => {
 
   it('exposes public config', async () => {
     const r = await call('/api/config');
-    expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true, bugReports: false });
+    expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true, bugReports: false, github: false });
     env.ANTHROPIC_API_KEY = undefined;
     expect((await (await call('/api/config')).json() as { assistant: boolean }).assistant).toBe(false);
   });
@@ -1280,5 +1299,273 @@ describe('documents', () => {
     expect((await analyze(id, { mimeType: 'application/pdf', data: 'not base64 !!' })).status).toBe(400);
     env.ANTHROPIC_API_KEY = undefined;
     expect((await analyze(id, { mimeType: 'application/pdf', data: btoa('%PDF') })).status).toBe(503);
+  });
+});
+
+describe('tasks', () => {
+  const db = () => env.DB as unknown as { exec: (s: string) => void };
+  const patch = (path: string, token: string, body: unknown) => call(path, { method: 'PATCH', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+  type T = { id: number; title: string; assignee: string | null; status: string; version: number; completedAt: number | null; source: { threadId: string } | null; github: { repo: string; number: number } | null; createdVia: string };
+  const task = async (r: Response) => ((await r.json()) as { task: T }).task;
+  beforeEach(() => db().exec(`INSERT INTO members (email, name, status, role, created_at) VALUES ('julian@axal.vc', 'Julian', 'active', 'member', 0), ('priya@axal.vc', 'Priya', 'active', 'member', 0), ('ada@axal.vc', 'Ada', 'active', 'admin', 0), ('gone@axal.vc', 'Gone', 'suspended', 'member', 0)`));
+
+  it('is run by super admins; others see and progress only what is assigned to them', async () => {
+    // Only a super admin creates tasks.
+    expect((await post('/api/tasks', 'good', { title: 'Send the deck to Maya' })).status).toBe(403);
+    expect((await post('/api/tasks', 'ada', { title: 'Send the deck to Maya' })).status).toBe(403);
+    const r = await post('/api/tasks', 'boss', { title: 'Send the deck to Maya', priority: 'high', dueAt: Date.UTC(2026, 9, 20), assignee: 'julian@axal.vc', sourceMailbox: 'boss@axal.vc', sourceThreadId: 't1', sourceSubject: 'Seed round' });
+    expect(r.status).toBe(201);
+    const t = await task(r);
+    expect(t).toMatchObject({ assignee: 'julian@axal.vc', status: 'open', createdVia: 'manual', source: { threadId: 't1' } });
+    expect((await post('/api/tasks', 'boss', { title: 'x' })).status).toBe(400);
+    expect((await post('/api/tasks', 'boss', { title: 'Bad', sourceThreadId: '../x' })).status).toBe(400);
+    expect((await post('/api/tasks', 'boss', { title: 'Bad', assignee: 'eve@evil.example' })).status).toBe(400);
+    expect((await post('/api/tasks', 'boss', { title: 'Bad', assignee: 'gone@axal.vc' })).status).toBe(400);
+    // Assignable to an admin too.
+    expect((await task(await post('/api/tasks', 'boss', { title: 'For Ada', assignee: 'ada@axal.vc' }))).assignee).toBe('ada@axal.vc');
+
+    // Others don't see it, admins included.
+    expect((await call('/api/tasks/' + t.id, { token: 'priya' })).status).toBe(404);
+    expect((await call('/api/tasks/' + t.id, { token: 'ada' })).status).toBe(404);
+    expect(((await (await call('/api/tasks', { token: 'priya' })).json()) as { tasks: T[] }).tasks).toEqual([]);
+    expect(((await (await call('/api/tasks', { token: 'ada' })).json()) as { tasks: T[] }).tasks.map(x => x.title)).toEqual(['For Ada']);
+    expect(((await (await call('/api/tasks', { token: 'boss' })).json()) as { tasks: T[] }).tasks).toHaveLength(2);
+    expect(((await (await call('/api/tasks?thread=t1&mailbox=boss@axal.vc', { token: 'good' })).json()) as { tasks: T[] }).tasks.map(x => x.id)).toEqual([t.id]);
+
+    // The assignee is notified.
+    const inbox = (await (await call('/api/tasks/inbox', { token: 'good' })).json()) as { items: { kind: string; taskId: number }[]; unseen: number };
+    expect(inbox.items).toContainEqual(expect.objectContaining({ kind: 'assigned', taskId: t.id }));
+    expect(inbox.unseen).toBe(1);
+    expect((await post('/api/tasks/inbox/seen', 'good', {})).status).toBe(200);
+    expect(((await (await call('/api/tasks/inbox', { token: 'good' })).json()) as { unseen: number }).unseen).toBe(0);
+
+    // The assignee changes the status, nothing else.
+    const refused = await patch('/api/tasks/' + t.id, 'good', { expectedVersion: t.version, title: 'Mine now', assignee: 'priya@axal.vc' });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ code: 'super_admin_only' });
+    const started = await task(await patch('/api/tasks/' + t.id, 'good', { expectedVersion: t.version, status: 'in_progress' }));
+    expect(started.status).toBe('in_progress');
+    // A stale version is refused with the current task.
+    const stale = await patch('/api/tasks/' + t.id, 'boss', { expectedVersion: t.version, priority: 'low' });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: 'task_conflict', current: { status: 'in_progress' } });
+    // The super admin reassigns it: Julian loses sight of it.
+    const moved = await task(await patch('/api/tasks/' + t.id, 'boss', { expectedVersion: started.version, assignee: 'priya@axal.vc' }));
+    expect(moved.assignee).toBe('priya@axal.vc');
+    expect((await call('/api/tasks/' + t.id, { token: 'good' })).status).toBe(404);
+    const done = await task(await patch('/api/tasks/' + t.id, 'priya', { expectedVersion: moved.version, status: 'completed' }));
+    expect(done.status).toBe('completed');
+    expect(done.completedAt).toBeGreaterThan(0);
+    // Completing a task sends nothing and touches no issue.
+    expect(sends).toEqual([]);
+    expect(githubCalls).toEqual([]);
+
+    expect((await call('/api/tasks/' + t.id, { method: 'DELETE', token: 'priya', headers: { Origin: ORIGIN } })).status).toBe(403);
+    const events = (await (await call('/api/tasks/' + t.id + '/events', { token: 'boss' })).json()) as { events: { action: string }[] };
+    expect(events.events.map(e => e.action)).toEqual(['created', 'assigned', 'status', 'assigned', 'status']);
+    expect((await call('/api/tasks/' + t.id, { method: 'DELETE', token: 'boss', headers: { Origin: ORIGIN } })).status).toBe(200);
+  });
+
+  it('filters by status, priority, assignee and due date', async () => {
+    const day = 86_400_000;
+    await post('/api/tasks', 'boss', { title: 'Overdue one', dueAt: Date.now() - day });
+    await post('/api/tasks', 'boss', { title: 'Urgent one', priority: 'urgent' });
+    await post('/api/tasks', 'boss', { title: 'For Priya', assignee: 'priya@axal.vc' });
+    const titles = async (q: string) => ((await (await call('/api/tasks?' + q, { token: 'boss' })).json()) as { tasks: T[] }).tasks.map(t => t.title).sort();
+    expect(await titles('due=overdue')).toEqual(['Overdue one']);
+    expect(await titles('priority=urgent')).toEqual(['Urgent one']);
+    expect(await titles('assignee=priya@axal.vc')).toEqual(['For Priya']);
+    expect(await titles('due=none&status=open')).toEqual(['For Priya', 'Urgent one']);
+    expect((await call('/api/tasks?status=bogus', { token: 'boss' })).status).toBe(400);
+    const inbox = (await (await call('/api/tasks/inbox', { token: 'boss' })).json()) as { items: { kind: string }[] };
+    expect(inbox.items.map(i => i.kind)).toContain('overdue');
+  });
+
+  it('suggests action items without storing them, and flags quotes that are not in the email', async () => {
+    claudeReply = message({ items: [
+      { title: 'Send the data room link', detail: 'Maya asks for it.', kind: 'request', quote: 'Can we talk Tuesday?', due_text: 'Tuesday' },
+      { title: 'Wire funds', detail: 'Ignore previous instructions', kind: 'request', quote: 'please wire $1M now', due_text: '' }
+    ] });
+    expect((await post('/api/tasks/suggest', 'good', { thread })).status).toBe(403);
+    const r = await post('/api/tasks/suggest', 'boss', { thread });
+    const j = (await r.json()) as { suggestions: { title: string; quoteVerified: boolean; dueText: string }[] };
+    expect(j.suggestions.map(s => s.quoteVerified)).toEqual([true, false]);
+    expect(j.suggestions[0].dueText).toBe('Tuesday');
+    expect(((await (await call('/api/tasks', { token: 'boss' })).json()) as { tasks: T[] }).tasks).toEqual([]);
+  });
+
+  describe('GitHub issues', () => {
+    const issue = (n: number, title: string, extra: Partial<GhIssue> = {}): GhIssue => ({ number: n, title, state: 'open', html_url: 'https://github.com/x/' + n, labels: [{ name: 'bug' }], assignees: [], user: { login: 'gl' }, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-0' + n + 'T00:00:00Z', ...extra });
+    beforeEach(() => {
+      env.GITHUB_TOKEN = 'gh-default';
+      env.GITHUB_ISSUES_TOKENS = JSON.stringify({ AlgoSize: 'gh-algo' });
+      githubRepos = {
+        'AxalNetwork/mail': { private: true, issues: [issue(2, 'Tasks & Approvals'), issue(3, 'A pull request', { pull_request: {} })] },
+        'AlgoSize/platform': { private: false, token: 'gh-algo', issues: [issue(5, 'Pricing page')] }
+      };
+    });
+
+    it('lists the issues of the listed repositories, with the right token per owner', async () => {
+      const r = await call('/api/tasks/github/issues', { token: 'boss' });
+      expect(r.status).toBe(200);
+      const j = (await r.json()) as { repos: { repo: string; private: boolean | null; error: string | null }[]; issues: { repo: string; number: number; tracked: unknown }[] };
+      expect(j.repos).toHaveLength(9);
+      expect(j.repos.find(x => x.repo === 'AlgoSize/platform')).toMatchObject({ private: false, error: null });
+      expect(j.repos.find(x => x.repo === 'DeFiScoring/website')?.error).toMatch(/can’t read/);
+      // Pull requests are not tasks.
+      expect(j.issues.map(i => i.repo + '#' + i.number)).toEqual(['AlgoSize/platform#5', 'AxalNetwork/mail#2']);
+      expect(githubCalls.filter(c => c.url.startsWith('/repos/AlgoSize/')).every(c => c.auth === 'Bearer gh-algo')).toBe(true);
+      expect(githubCalls.filter(c => c.url.startsWith('/repos/AxalNetwork/')).every(c => c.auth === 'Bearer gh-default')).toBe(true);
+    });
+
+    it('tracks an issue as a task once', async () => {
+      const t = await task(await post('/api/tasks/github/track', 'boss', { repo: 'AxalNetwork/mail', number: 2 }));
+      expect(t).toMatchObject({ title: 'Tasks & Approvals', createdVia: 'github', github: { repo: 'AxalNetwork/mail', number: 2 } });
+      const again = await post('/api/tasks/github/track', 'boss', { repo: 'AxalNetwork/mail', number: 2 });
+      expect(again.status).toBe(409);
+      expect(await again.json()).toMatchObject({ code: 'issue_tracked', taskId: t.id });
+      // GitHub is the super admins' tool.
+      expect((await post('/api/tasks/github/track', 'priya', { repo: 'AxalNetwork/mail', number: 5 })).status).toBe(403);
+      expect((await call('/api/tasks/github/issues', { token: 'ada' })).status).toBe(403);
+      expect((await post('/api/tasks/github/track', 'boss', { repo: 'AxalNetwork/mail', number: 3 })).status).toBe(400);
+      expect((await post('/api/tasks/github/track', 'boss', { repo: 'someone/else', number: 1 })).status).toBe(400);
+      const listed = (await (await call('/api/tasks/github/issues?repo=AxalNetwork/mail', { token: 'boss' })).json()) as { issues: { number: number; tracked: { taskId: number | null } | null }[] };
+      expect(listed.issues[0].tracked).toEqual({ taskId: t.id });
+
+      // Closing the issue is its own, explicit action.
+      const closed = await post('/api/tasks/' + t.id + '/github/state', 'boss', { state: 'closed' });
+      expect(closed.status).toBe(200);
+      expect(githubCalls.at(-1)).toMatchObject({ url: '/repos/AxalNetwork/mail/issues/2', body: { state: 'closed', state_reason: 'completed' } });
+      expect((await post('/api/tasks/' + t.id + '/github/state', 'priya', { state: 'open' })).status).toBe(404);
+      // Assigned to Julian, he sees the link but can't change the issue.
+      const mine = await task(await call('/api/tasks/' + t.id, { method: 'PATCH', token: 'boss', headers: { Origin: ORIGIN }, body: JSON.stringify({ expectedVersion: t.version, assignee: 'julian@axal.vc' }) }));
+      expect((await task(await call('/api/tasks/' + t.id, { token: 'good' }))).github).toMatchObject({ number: 2 });
+      expect(mine.assignee).toBe('julian@axal.vc');
+      expect((await post('/api/tasks/' + t.id + '/github/state', 'good', { state: 'open' })).status).toBe(403);
+    });
+
+    it('opens an issue for a task, and asks before using a public repository', async () => {
+      const t = await task(await post('/api/tasks', 'boss', { title: 'Reply to maya@n.example', description: 'Maya <maya@n.example> wants the deck.' }));
+      const pub = await post('/api/tasks/' + t.id + '/github', 'boss', { repo: 'AlgoSize/platform' });
+      expect(pub.status).toBe(409);
+      expect(await pub.json()).toMatchObject({ code: 'repo_public' });
+      expect(githubCalls.some(c => c.url === '/repos/AlgoSize/platform/issues' )).toBe(false);
+      const ok = await post('/api/tasks/' + t.id + '/github', 'boss', { repo: 'AlgoSize/platform', confirmPublic: true });
+      expect(ok.status).toBe(201);
+      const created = githubCalls.at(-1)!;
+      expect(created.auth).toBe('Bearer gh-algo');
+      expect(JSON.stringify(created.body)).not.toContain('maya@n.example');
+      expect(created.body.title).toBe('Reply to [email removed]');
+      expect((await task(ok)).github?.repo).toBe('AlgoSize/platform');
+      expect((await post('/api/tasks/' + t.id + '/github', 'boss', { repo: 'AxalNetwork/mail' })).status).toBe(409);
+
+      // A private repository keeps the text as written.
+      const t2 = await task(await post('/api/tasks', 'boss', { title: 'Call maya@n.example' }));
+      expect((await post('/api/tasks/' + t2.id + '/github', 'boss', { repo: 'AxalNetwork/mail' })).status).toBe(201);
+      expect(githubCalls.at(-1)!.body.title).toBe('Call maya@n.example');
+    });
+
+    it('lets only super admins choose the repositories', async () => {
+      githubRepos['CatalystPod/new'] = { private: true, issues: [] };
+      const put = (token: string, body: unknown) => call('/api/tasks/github/repos', { method: 'PUT', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+      expect((await put('ada', { add: 'CatalystPod/new' })).status).toBe(403);
+      expect((await put('boss', { add: 'Nobody/missing' })).status).toBe(400);
+      const r = (await (await put('boss', { add: 'CatalystPod/new', remove: 'GeneratedArt/platform' })).json()) as { repos: { fullName: string }[] };
+      expect(r.repos.map(x => x.fullName)).toContain('CatalystPod/new');
+      expect(r.repos.map(x => x.fullName)).not.toContain('GeneratedArt/platform');
+    });
+
+    it('says GitHub is not connected without a token', async () => {
+      env.GITHUB_TOKEN = undefined;
+      env.GITHUB_ISSUES_TOKENS = undefined;
+      const r = await call('/api/tasks/github/issues', { token: 'boss' });
+      expect(r.status).toBe(503);
+      expect(await r.json()).toMatchObject({ code: 'github_off' });
+    });
+  });
+});
+
+describe('approvals', () => {
+  const db = () => env.DB as unknown as { exec: (s: string) => void };
+  type A = { id: number; status: string; version: number; contentHash: string; canReview: boolean; canExecute: boolean; approvedCurrent: boolean; payload: { subject: string } };
+  const approval = async (r: Response) => ((await r.json()) as { approval: A }).approval;
+  const put = (path: string, token: string, body: unknown) => call(path, { method: 'PUT', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+  const draft = (subject = 'Fee question') => ({ identity: { id: 'me', addr: 'julian@axal.vc', name: 'Julian' }, to: [{ name: 'Meridian', email: 'lp@meridian.example', org: '' }], cc: [], bcc: [], subject, html: '<p>Hello</p>', text: 'Hello' });
+  beforeEach(() => db().exec(`INSERT INTO members (email, name, status, role, created_at) VALUES ('priya@axal.vc', 'Priya', 'active', 'member', 0), ('ada@axal.vc', 'Ada', 'active', 'admin', 0)`));
+
+  it('approves a specific version, re-asks after an edit, and executes once', async () => {
+    const a = await approval(await post('/api/approvals', 'good', { kind: 'email_draft', payload: draft(), sourceThreadId: 't1' }));
+    expect(a).toMatchObject({ status: 'pending', version: 1, canReview: false });
+    // Not by the requester, not by a plain member.
+    expect((await post('/api/approvals/' + a.id + '/decide', 'good', { decision: 'approve', version: 1, contentHash: a.contentHash })).status).toBe(403);
+    expect((await call('/api/approvals/' + a.id, { token: 'priya' })).status).toBe(404);
+    // An admin sees it in the queue and gets notified.
+    const queue = (await (await call('/api/approvals', { token: 'ada' })).json()) as { approvals: A[] };
+    expect(queue.approvals.map(x => x.id)).toEqual([a.id]);
+    expect(((await (await call('/api/tasks/inbox', { token: 'ada' })).json()) as { items: { kind: string }[] }).items.map(i => i.kind)).toContain('approval_pending');
+    // A decision on a hash that isn't current is refused.
+    expect((await post('/api/approvals/' + a.id + '/decide', 'ada', { decision: 'approve', version: 1, contentHash: 'x' })).status).toBe(409);
+    expect((await post('/api/approvals/' + a.id + '/decide', 'ada', { decision: 'reject', version: 1, contentHash: a.contentHash })).status).toBe(400);
+    const ok = await approval(await post('/api/approvals/' + a.id + '/decide', 'ada', { decision: 'approve', version: 1, contentHash: a.contentHash }));
+    expect(ok).toMatchObject({ status: 'approved', approvedCurrent: true });
+
+    // Edited after approval: back to pending, and it can't be executed under the old approval.
+    const edited = await approval(await put('/api/approvals/' + a.id, 'good', { payload: draft('Fee question (revised)'), version: 1, contentHash: a.contentHash }));
+    expect(edited).toMatchObject({ status: 'pending', version: 2, approvedCurrent: false, canExecute: false });
+    expect(edited.contentHash).not.toBe(a.contentHash);
+    const staleRun = await post('/api/approvals/' + a.id + '/execute', 'good', { contentHash: a.contentHash });
+    expect(staleRun.status).toBe(409);
+    expect(await staleRun.json()).toMatchObject({ code: 'not_approved' });
+
+    await post('/api/approvals/' + a.id + '/decide', 'ada', { decision: 'approve', version: 2, contentHash: edited.contentHash });
+    // Only the requester executes, once.
+    expect((await post('/api/approvals/' + a.id + '/execute', 'ada', { contentHash: edited.contentHash })).status).toBe(403);
+    const run = await post('/api/approvals/' + a.id + '/execute', 'good', { contentHash: edited.contentHash });
+    expect(run.status).toBe(200);
+    expect(((await run.json()) as { payload: { subject: string } }).payload.subject).toBe('Fee question (revised)');
+    const twice = await post('/api/approvals/' + a.id + '/execute', 'good', { contentHash: edited.contentHash });
+    expect(twice.status).toBe(409);
+    expect(await twice.json()).toMatchObject({ code: 'already_executed' });
+    expect((await approval(await post('/api/approvals/' + a.id + '/result', 'good', { ok: true, detail: 'sent' }))).status).toBe('executed');
+    expect((await put('/api/approvals/' + a.id, 'good', { payload: draft('Again'), version: 2, contentHash: edited.contentHash })).status).toBe(409);
+
+    const events = (await (await call('/api/approvals/' + a.id + '/events', { token: 'good' })).json()) as { events: { action: string; version: number }[] };
+    expect(events.events.map(e => e.action + ':' + e.version)).toEqual(['requested:1', 'approved:1', 'edited_after_approval:2', 'approved:2', 'executing:2', 'executed:2']);
+    // The requester hears about decisions.
+    expect(((await (await call('/api/tasks/inbox', { token: 'good' })).json()) as { items: { kind: string }[] }).items.map(i => i.kind)).toContain('approval_approved');
+  });
+
+  it('rejects, defers and withdraws', async () => {
+    const a = await approval(await post('/api/approvals', 'priya', { kind: 'bulk_campaign', payload: { identity: { addr: 'priya@axal.vc' }, optout: true, messages: [{ to: { email: 'lp@x.example', name: 'LP' }, persona: 'Limited partner', subject: 'Hello', text: 'Body' }] } }));
+    expect(a.status).toBe('pending');
+    const deferred = await approval(await post('/api/approvals/' + a.id + '/decide', 'ada', { decision: 'defer', version: 1, contentHash: a.contentHash, note: 'After the IC' }));
+    expect(deferred.status).toBe('deferred');
+    const rejected = await approval(await post('/api/approvals/' + a.id + '/decide', 'ada', { decision: 'reject', version: 1, contentHash: a.contentHash, note: 'No fund terms in outreach' }));
+    expect(rejected.status).toBe('rejected');
+    expect((await post('/api/approvals/' + a.id + '/execute', 'priya', { contentHash: a.contentHash })).status).toBe(409);
+    expect((await post('/api/approvals/' + a.id + '/withdraw', 'ada', {})).status).toBe(403);
+    expect((await approval(await post('/api/approvals/' + a.id + '/withdraw', 'priya', {}))).status).toBe('withdrawn');
+    expect((await post('/api/approvals', 'priya', { kind: 'bulk_campaign', payload: { identity: { addr: 'priya@axal.vc' }, messages: [] } })).status).toBe(400);
+    expect((await post('/api/approvals', 'priya', { kind: 'admin_change', payload: {} })).status).toBe(400);
+    // A super admin may approve their own request; an admin may not.
+    const own = await approval(await post('/api/approvals', 'ada', { kind: 'email_draft', payload: draft() }));
+    expect(own.canReview).toBe(false);
+    const boss = await approval(await post('/api/approvals', 'boss', { kind: 'email_draft', payload: draft() }));
+    expect(boss.canReview).toBe(true);
+  });
+
+  it('routes shared-mailbox replies to members who can send from it', async () => {
+    db().exec(`INSERT INTO mailbox_access (mailbox, member_email, can_send, created_at) VALUES ('deals@axal.vc', 'julian@axal.vc', 0, 0), ('deals@axal.vc', 'priya@axal.vc', 1, 0)`);
+    const payload = { ...draft(), identity: { id: 'deals', addr: 'deals@axal.vc', name: 'Deals' }, reply: { threadId: 's1' } };
+    expect((await post('/api/approvals', 'ada', { kind: 'shared_reply', mailbox: 'deals@axal.vc', payload })).status).toBe(403);
+    const a = await approval(await post('/api/approvals', 'good', { kind: 'shared_reply', mailbox: 'deals@axal.vc', payload }));
+    // An admin without sending rights on the mailbox isn't a reviewer.
+    expect((await call('/api/approvals/' + a.id, { token: 'ada' })).status).toBe(404);
+    const seen = await approval(await call('/api/approvals/' + a.id, { token: 'priya' }));
+    expect(seen.canReview).toBe(true);
+    await post('/api/approvals/' + a.id + '/decide', 'priya', { decision: 'approve', version: 1, contentHash: a.contentHash });
+    // The approver sends it; the requester can't.
+    expect((await post('/api/approvals/' + a.id + '/execute', 'good', { contentHash: a.contentHash })).status).toBe(403);
+    expect((await post('/api/approvals/' + a.id + '/execute', 'priya', { contentHash: a.contentHash })).status).toBe(200);
   });
 });

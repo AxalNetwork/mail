@@ -119,7 +119,7 @@ export function Team({ api, mailboxes, providerFor, initial, from, to, days, org
 
       <div className="card panel an-limits">
         <span className="mono-label">Tasks &amp; approvals</span>
-        <span className="muted">Outstanding tasks and approvals will appear here once Tasks &amp; Approvals exists. Outreach waiting for approval is under Outreach.</span>
+        <span className="muted">Tasks and approval requests are in Tasks &amp; Approvals. Outreach waiting for approval is under Outreach.</span>
       </div>
     </>
   );
