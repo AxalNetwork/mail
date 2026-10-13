@@ -10,7 +10,7 @@ interface Props {
   onOpen: (threadId: string) => void;
   /** Opens a reply to the conversation with an assistant draft. */
   onDraftReply: (threadId: string) => void;
-  onGo: (view: 'analytics') => void;
+  onGo: (view: 'analytics' | 'sequences') => void;
 }
 
 const DAY = 86_400_000;
@@ -18,7 +18,6 @@ const DAY = 86_400_000;
 const PLANNED: { name: string; what: string; needs: string }[] = [
   { name: 'Intelligent inbox manager', what: 'Classify, prioritize and label incoming mail.', needs: 'Gmail filters and labels written on your behalf; needs a review step before it changes your mailbox.' },
   { name: 'Email-to-CRM', what: 'Extract contacts, companies, opportunities and next steps.', needs: 'A CRM to write to (none is connected yet).' },
-  { name: 'Investor outreach sequences', what: 'Personalized outreach with follow-up steps.', needs: 'Builds on Bulk email; sequences need scheduled sends, which the Gmail API doesn’t offer, so they need a sending job on the Worker.' },
   { name: 'Meeting scheduling agent', what: 'Handle scheduling requests and coordinate availability.', needs: 'Google Calendar access (a new permission).' },
   { name: 'Support agent', what: 'Answer routine questions, escalate the rest.', needs: 'A shared support inbox and an approved answer base.' },
   { name: 'Document processing', what: 'Pull terms and figures from PDFs, decks and contracts.', needs: 'Attachment reading by the assistant, with confidentiality rules per document.' }
@@ -70,6 +69,12 @@ export function Automations({ provider, orgDomain, aiReady, onOpen, onDraftReply
               <span className="muted" style={{ fontSize: 12.5 }}>People waiting on an answer, oldest first. Each draft uses the conversation and your signature.</span>
               <Rows items={s.waitingOnYou.slice(0, 10)} now={now} empty="Nobody is waiting on you." onOpen={onOpen}
                 action={{ label: 'Draft reply', run: onDraftReply }} />
+            </div>
+
+            <div className="card panel">
+              <Head name="Investor outreach sequences" status="Active" />
+              <span className="muted" style={{ fontSize: 12.5 }}>A first email and timed follow-ups, approved by an admin, sent by the server from your Gmail. Replies and unsubscribes stop them.</span>
+              <div><button className="btn sm" onClick={() => onGo('sequences')}>Open sequences</button></div>
             </div>
 
             <div className="card panel">

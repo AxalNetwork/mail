@@ -46,5 +46,8 @@
   },
   // Secrets (wrangler secret put): ANTHROPIC_API_KEY
 
+  // Outreach sequences: send due follow-up steps every 10 minutes.
+  "triggers": { "crons": ["*/10 * * * *"] },
+
   "observability": { "enabled": true }
 }

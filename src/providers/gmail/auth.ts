@@ -45,7 +45,19 @@ interface TokenClient {
   requestAccessToken(overrides?: { prompt?: string; login_hint?: string }): void;
 }
 
+interface CodeClient {
+  requestCode(): void;
+}
+
 interface GoogleOAuth2 {
+  initCodeClient(cfg: {
+    client_id: string;
+    scope: string;
+    ux_mode: 'popup';
+    login_hint?: string;
+    callback: (r: { code?: string; error?: string; error_description?: string }) => void;
+    error_callback?: (e: { type: string; message?: string }) => void;
+  }): CodeClient;
   initTokenClient(cfg: {
     client_id: string;
     scope: string;
@@ -70,7 +82,7 @@ export class GoogleSignInError extends Error {
 
 let gisPromise: Promise<void> | null = null;
 
-function loadGis(): Promise<void> {
+export function loadGis(): Promise<void> {
   if (window.google?.accounts?.oauth2) return Promise.resolve();
   if (!gisPromise) {
     gisPromise = new Promise((resolve, reject) => {
@@ -218,4 +230,23 @@ export class GoogleAuth {
     try { localStorage.removeItem(HINT_KEY); localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
     if (t && window.google?.accounts?.oauth2) window.google.accounts.oauth2.revoke(t);
   }
+}
+
+/**
+ * One-time consent for offline Gmail access (sending scheduled outreach while
+ * no browser is open). Returns the authorization code, which only the Worker
+ * can exchange, using the client secret.
+ */
+export async function requestOfflineCode(clientId: string, scopes: string[], hint?: string): Promise<string> {
+  await loadGis();
+  return new Promise((resolve, reject) => {
+    window.google!.accounts.oauth2.initCodeClient({
+      client_id: clientId,
+      scope: scopes.join(' '),
+      ux_mode: 'popup',
+      login_hint: hint,
+      callback: r => (r.code ? resolve(r.code) : reject(new GoogleSignInError(r.error || 'denied', r.error_description || 'Google did not grant access.'))),
+      error_callback: e => reject(new GoogleSignInError(e.type, e.type === 'popup_closed' ? 'The Google window closed before you finished.' : e.message || e.type))
+    }).requestCode();
+  });
 }

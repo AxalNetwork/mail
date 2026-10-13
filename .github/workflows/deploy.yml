@@ -40,6 +40,9 @@ jobs:
       # GitHub reserves the GITHUB_ prefix for repository secrets, so the bug
       # report token is stored as BUG_REPORTS_TOKEN and set on the Worker as GITHUB_TOKEN.
       BUG_REPORTS_TOKEN: ${{ secrets.BUG_REPORTS_TOKEN }}
+      # Outreach sequences: the OAuth client secret and the key that encrypts stored sending grants.
+      OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+      TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
       # A repository variable or secret; the client ID is public either way.
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLIENT_ID }}
     steps:
@@ -96,6 +99,11 @@ jobs:
       - name: Set the bug report token
         if: steps.creds.outputs.ok == 'true' && env.BUG_REPORTS_TOKEN != ''
         run: printf '%s' "$BUG_REPORTS_TOKEN" | npx wrangler secret put GITHUB_TOKEN
+      - name: Set the outreach sequence secrets
+        if: steps.creds.outputs.ok == 'true' && env.OAUTH_CLIENT_SECRET != '' && env.TOKEN_ENCRYPTION_KEY != ''
+        run: |
+          printf '%s' "$OAUTH_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET
+          printf '%s' "$TOKEN_ENCRYPTION_KEY" | npx wrangler secret put TOKEN_ENCRYPTION_KEY
       - name: Smoke test
         if: steps.creds.outputs.ok == 'true'
         # A new custom domain can take a few minutes to get its certificate.

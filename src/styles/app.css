@@ -656,3 +656,24 @@ button.attachment:hover { background: var(--bg); }
 .cols-tip { position: absolute; top: -6px; transform: translate(-50%, -100%); background: var(--dark); color: #fff; font-size: 11.5px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; pointer-events: none; }
 .cols-x { display: flex; margin-top: 6px; }
 .cols-x span { font-size: 10px; color: var(--faint); white-space: nowrap; overflow: visible; }
+
+/* Outreach sequences */
+.trow.seqs { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) 120px 20px; padding: 11px 16px; min-width: 720px; }
+button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 0; border-top: 0; background: var(--surface); font: inherit; color: inherit; }
+.trow.seqs.head { padding: 9px 16px; }
+.trow.seqs.clickable { cursor: pointer; }
+.trow.seqs.clickable:hover { background: var(--surface-2); }
+.trow.seq-people { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 150px; padding: 10px 16px; min-width: 720px; }
+.trow.seq-people.head { padding: 9px 16px; }
+.seq-editor { gap: 14px; }
+.seq-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.seq-field .input, .seq-field .textarea { color: var(--text); font-size: 13px; }
+.seq-step { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); }
+.seq-step .input, .seq-step .textarea { font-size: 13px; }
+.seq-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.seq-inline .input { width: 64px; height: 28px; padding: 0 8px; }
+.seq-preview { font-size: 12.5px; }
+.seq-preview summary { cursor: pointer; color: var(--accent-strong); }
+.seq-preview > b, .seq-preview > div { display: block; margin-top: 6px; }
+.seq-step-view { display: flex; flex-direction: column; gap: 3px; padding: 10px 0; border-top: 1px solid var(--line-2); }
+.seq-approve { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

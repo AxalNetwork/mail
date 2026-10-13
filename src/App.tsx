@@ -16,6 +16,8 @@ import type { Assistant } from './assistant/types';
 import { demoSignIn, fetchMe, gmailSignIn } from './signIn';
 import { HttpAdminApi, type AdminApi, type Role } from './admin/api';
 import { httpReportBug, type ReportBug } from './lib/diagnostics';
+import { HttpSequencesApi, SENDER_SCOPES, type SequencesApi } from './lib/sequencesApi';
+import { requestOfflineCode } from './providers/gmail/auth';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -150,6 +152,13 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.bugReportUrl]
   );
 
+  const sequences = useMemo<SequencesApi | null>(
+    () => (mode === 'gmail' && auth && config.sessionUrl
+      ? new HttpSequencesApi(() => auth.token(), () => requestOfflineCode(config.googleClientId, SENDER_SCOPES, auth.loginHint))
+      : null),
+    [mode, auth, config.sessionUrl, config.googleClientId]
+  );
+
   const deliverability = useMemo(
     () => (mode === 'gmail' && auth && config.sessionUrl
       ? async () => {
@@ -216,6 +225,7 @@ function Session({ config }: { config: AppConfig }) {
       admin={admin}
       reportBug={reportBug}
       deliverability={deliverability}
+      sequences={sequences}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
       onSignOut={signOut}

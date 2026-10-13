@@ -66,6 +66,8 @@ Configuration lives in the Worker, not in the build: the frontend reads `/api/co
 | `SUPER_ADMINS` | var, `guillaume.lauzier@axal.vc` | Members with full rights in *Members & access*. They can't be suspended or demoted from the app. |
 | `ANTHROPIC_API_KEY` | secret | Assistant; without it the assistant endpoints answer 503 and the UI falls back to templates |
 | `GOOGLE_SERVICE_ACCOUNT` | secret | Service account key (JSON) with domain-wide delegation; enables shared mailboxes |
+| `GOOGLE_CLIENT_SECRET` | secret (or the `OAUTH_CLIENT_SECRET` GitHub secret) | OAuth client secret; exchanges *Connect sending* grants for refresh tokens |
+| `TOKEN_ENCRYPTION_KEY` | secret (or the GitHub secret of the same name) | 32 bytes, base64; encrypts stored sending grants |
 | `GITHUB_TOKEN` | secret (or the `BUG_REPORTS_TOKEN` GitHub secret, which the deploy copies) | Enables *Report a bug* (account menu): a fine-grained token with **Issues: Read and write** on the repository |
 | `GITHUB_REPO` | var, default `AxalNetwork/mail` | Where bug reports are filed |
 | `GMAIL_REFRESH_TOKEN` + `GMAIL_CLIENT_SECRET` | secrets | Instead of a service account: a refresh token (gmail.modify, issued to the client ID) for one mailbox, which super admins can then share |
@@ -139,6 +141,21 @@ A suspension applies to new sign-ins at once, and to open sessions within 5 minu
 
 **AI Automations** turns the same data into work to approve: a daily briefing, a follow-up agent (you wrote last, 3+ days ago) and a reply queue, each with *Draft* buttons that open the composer with an assistant draft. Nothing is sent automatically. Inbox management, CRM sync, outreach sequences, scheduling, support and document processing are listed with what each needs first.
 
+## Outreach sequences
+
+AI Automations → **Investor outreach sequences**: a first email plus up to five timed follow-ups ("if no reply after N days"), with merge fields, sent to up to 200 external recipients from the owner's Gmail **by the Worker**, so no browser needs to stay open.
+
+- **Approval:** a sequence starts as a draft. An admin (or a super admin, for their own) approves the exact version; any edit makes a new version that needs approval again, and the cron only sends for `approved_version = version`.
+- **Sending:** each owner clicks **Connect sending** once. Google asks for `gmail.send` and `gmail.readonly`, and the Worker exchanges the code (client secret) for a refresh token stored AES-GCM-encrypted in D1 (`sender_credentials`). **Disconnect** revokes it. With domain-wide delegation (`GOOGLE_SERVICE_ACCOUNT`) no grant is needed.
+- **Schedule:** a Cron Trigger every 10 minutes sends at most 20 due steps per run. Follow-ups are replies in the same thread (`In-Reply-To` / `References`), or a new subject if the step has one.
+- **Stop rules,** checked against the live thread before each send: any reply, a bounce, or "unsubscribe / remove me" ends that recipient's sequence (the last adds them to `opt_outs`, honored by every sequence). Owners can also stop or opt out a person. Every email ends with an unsubscribe line.
+- **Exactly once:** each (recipient, step) is claimed in `sequence_sends` before sending. Gmail 429/5xx releases the claim for a retry (3 tries); a send whose outcome is unknown is never repeated and is flagged "check Sent mail".
+
+To turn it on:
+1. Google Cloud → the OAuth client: add `https://www.googleapis.com/auth/gmail.send` and `…/gmail.readonly` to the consent screen's scopes, and copy the **client secret**.
+2. GitHub → Settings → Secrets → Actions: `OAUTH_CLIENT_SECRET` (that secret) and `TOKEN_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`). The deploy copies them to the Worker as `GOOGLE_CLIENT_SECRET` and `TOKEN_ENCRYPTION_KEY`. Keep the key: losing it means everyone connects sending again.
+3. Apply migration `0006_sequences.sql` (`npm run db:migrate`).
+
 ## Bug reports
 
 *Report a bug* in the account menu files a GitHub issue (label `bug`) through the Worker. The repository is public, so the form says so, the issue never names the reporter, and email addresses are removed from everything it sends. Who filed which issue is kept in D1 (`bug_reports`) for admins. The optional technical details are the screen, path, build, browser, window size and the last few app errors. Each member can file 5 reports an hour.
@@ -160,6 +177,9 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/assistant/rewrite` | `shorter`, `formal`, `warmer`, `clarity`, `translate` (French) |
 | `POST /api/assistant/persona` | Bulk email subject and body for one persona, with merge tokens |
 | `POST /api/bug-report` | File a bug report as a GitHub issue |
+| `GET/POST/DELETE /api/sequences/sender` | Sending grant status, connect (authorization code), disconnect |
+| `GET/POST /api/sequences` · `GET/PUT /api/sequences/:id` | Outreach sequences: list, create, read, edit (new version) |
+| `POST /api/sequences/:id/approve\|start\|pause\|stop` · `…/recipients/:rid/stop` | Approve a version (admins), run controls, stop or opt out one person |
 | `GET /api/analytics/deliverability` | MX, SPF, DKIM and DMARC checks for the organization domain |
 | `GET /api/mailboxes` | Shared mailboxes this member may open |
 | `/api/mailboxes/<mailbox>/(upload/)gmail/v1/users/me/…` | Gmail API for a shared mailbox, limited to what the mail client uses |
@@ -211,6 +231,8 @@ worker/                   Backend (Cloudflare Worker)
   src/admin.ts            Members, roles and linked accounts
   src/mailboxes.ts        Shared mailbox access and the Gmail proxy
   src/delegation.ts       Domain-wide delegation tokens (service account JWT)
+  src/senders.ts          Per-member offline sending grants (encrypted refresh tokens)
+  src/sequences.ts        Outreach sequences API and the cron runner
   src/config.ts           OAuth client ID (Worker variable or build-time fallback)
   src/assistant.ts        Claude calls and prompts
   src/notes.ts            D1 notes

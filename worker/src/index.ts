@@ -8,6 +8,8 @@ import * as mailboxes from './mailboxes';
 import { googleClientId } from './config';
 import { bugReportsEnabled, fileBugReport } from './bugs';
 import { deliverability } from './deliverability';
+import * as sequences from './sequences';
+import { connectSender, disconnectSender, senderStatus } from './senders';
 
 export type { Env };
 
@@ -26,6 +28,13 @@ export default {
     } catch (e) {
       return errorResponse(e);
     }
+  },
+
+  /** Cron (wrangler.jsonc triggers): send the outreach sequence steps that are due. */
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(sequences.runDue(env).then(r => {
+      if (r.sent || r.failed || r.paused) console.log('Outreach sequences:', JSON.stringify(r));
+    }).catch(e => console.error('Outreach sequences run failed (is migration 0006 applied?)', e)));
   }
 } satisfies ExportedHandler<Env>;
 
@@ -66,6 +75,13 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === 'GET') return json({ notes: await listNotes(env.DB, url.searchParams.get('key')) });
     if (method === 'POST') return json({ note: await addNote(env.DB, user, await readJson(req)) }, 201);
   }
+
+  if (path === '/api/sequences/sender') {
+    if (method === 'GET') return json({ sender: await senderStatus(env, user) });
+    if (method === 'POST') return json({ sender: await connectSender(env, user, (await readJson<{ code?: unknown }>(req)).code) });
+    if (method === 'DELETE') return json({ sender: await disconnectSender(env, user) });
+  }
+  if (path === '/api/sequences' || path.startsWith('/api/sequences/')) return sequences.route(req, env, user, url);
 
   if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
