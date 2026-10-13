@@ -442,13 +442,13 @@ export class GmailProvider implements MailProvider {
   }
 
   /** Media upload (multipart/related) so large attachments aren't limited by the JSON body size. */
-  private upload<T>(path: string, method: 'POST' | 'PUT', metadata: unknown, raw: string): Promise<T> {
+  private upload<T>(path: string, method: 'POST' | 'PUT', metadata: unknown, raw: string, extra: Record<string, string> = {}): Promise<T> {
     const b = 'axal_upload_' + Math.random().toString(36).slice(2);
     const body =
       '--' + b + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) + '\r\n' +
       '--' + b + '\r\nContent-Type: message/rfc822\r\n\r\n' + raw + '\r\n--' + b + '--';
     return this.api.request<T>(this.uploads + path, {
-      method, query: { uploadType: 'multipart' }, body, headers: { 'Content-Type': 'multipart/related; boundary=' + b }
+      method, query: { uploadType: 'multipart' }, body, headers: { 'Content-Type': 'multipart/related; boundary=' + b, ...extra }
     });
   }
 
@@ -477,13 +477,18 @@ export class GmailProvider implements MailProvider {
   async send(msg: OutgoingMessage): Promise<SentResult> {
     if (msg.schedule) throw new Error('Scheduled send is not available through the Gmail API.');
     let r: { id: string; threadId: string };
+    // In a shared mailbox the Worker checks, before sending, that nobody replied since this reply was started.
+    const shared: Record<string, string> = !this.mailbox ? {} : {
+      ...(msg.reply?.seenMessageId ? { 'X-Axal-Seen-Message': msg.reply.seenMessageId } : {}),
+      ...(msg.confirmShared ? { 'X-Axal-Confirm': '1' } : {})
+    };
     if (msg.draftId) {
       // Update the stored draft, then send it, so Gmail doesn't keep a stale copy.
       await this.saveDraft(msg);
-      r = await this.api.request(this.gmail + '/drafts/send', { json: { id: msg.draftId } });
+      r = await this.api.request(this.gmail + '/drafts/send', { json: { id: msg.draftId }, headers: shared });
     } else {
       r = await this.upload(
-        '/messages/send', 'POST', msg.reply ? { threadId: msg.reply.threadId } : {}, await this.raw(msg));
+        '/messages/send', 'POST', msg.reply ? { threadId: msg.reply.threadId } : {}, await this.raw(msg), shared);
     }
     // The email is already sent; a failed note must not report the send as failed.
     await this.saveNote(msg, r.id).catch(e => console.warn('Internal note not saved', e));

@@ -1,7 +1,8 @@
 import type { GoogleAuth } from './auth';
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  /** Set by the Worker's proxy for its own refusals, e.g. reply_conflict. */
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
   }
 }
@@ -55,11 +56,13 @@ export class GoogleClient {
       }
       if (!res.ok) {
         let msg = res.statusText || 'Request failed';
+        let code: string | undefined;
         try {
           const j = await res.json();
-          msg = j?.error?.message || msg;
+          // Google answers { error: { message } }; the Worker's proxy answers { error, code }.
+          if (typeof j?.error === 'string') { msg = j.error; code = j.code; } else msg = j?.error?.message || msg;
         } catch { /* not JSON */ }
-        throw new ApiError(msg + ' (' + res.status + ')', res.status);
+        throw new ApiError(code ? msg : msg + ' (' + res.status + ')', res.status, code);
       }
       if (o.raw) return res as unknown as T;
       if (res.status === 204) return undefined as T;

@@ -23,6 +23,9 @@ import type { NotesStore } from './providers/gmail/notes';
 import { InternalPage } from './components/internal/InternalPage';
 import { ContactsPage } from './components/contacts/ContactsPage';
 import type { ContactsApi } from './lib/contactsApi';
+import type { SharedApi } from './lib/sharedApi';
+import { SharedBar, useSharedPresence } from './components/shared/SharedBar';
+import { SharedInboxes } from './components/shared/SharedInboxes';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
@@ -56,6 +59,14 @@ interface Props {
   dismissals?: DismissalStore | null;
   /** Contacts & Relationships records (backend). */
   contacts?: ContactsApi | null;
+  /** Shared inbox assignment, status and presence (backend). */
+  shared?: SharedApi | null;
+  /** A provider for another shared mailbox, for the Shared Inboxes page. */
+  providerFor?: (mailbox: string) => MailProvider;
+  /** Switch to a shared mailbox and open one of its conversations. */
+  onOpenShared?: (mailbox: string, threadId: string) => void;
+  /** Conversation to open first (after switching mailbox). */
+  initialThread?: string | null;
 }
 
 interface ListState {
@@ -75,7 +86,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread }: Props) {
   const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
@@ -87,7 +98,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   const [mailbox, setMailbox] = useState('');
   const [list, setList] = useState<ListState>({ threads: [], loading: true, error: null });
   const [counts, setCounts] = useState<FolderCounts>(EMPTY_COUNTS);
-  const [selId, setSelId] = useState<string | null>(null);
+  const [selId, setSelId] = useState<string | null>(initialThread || null);
   const [thread, setThread] = useState<Thread | null>(null);
   const [threadState, setThreadState] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   const [aiOpen, setAiOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1280);
@@ -106,10 +117,22 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
     return () => clearInterval(t);
   }, [refreshInternal]);
 
+  // ----- shared mailbox: who is here, and the members to assign to -----
+  const sharedMailbox = shared ? provider.mailbox : undefined;
+  const [sharedMembers, setSharedMembers] = useState<{ email: string; name: string }[]>([]);
+  useEffect(() => {
+    if (!shared || !sharedMailbox) return;
+    shared.mailboxes().then(r => setSharedMembers(r.mailboxes.find(m => m.mailbox === sharedMailbox)?.members || [])).catch(() => {});
+  }, [shared, sharedMailbox]);
+  const presence: Record<string, 'viewing' | 'replying'> = {};
+  if (selId) presence[selId] = 'viewing';
+  if (compose?.reply?.threadId) presence[compose.reply.threadId] = 'replying';
+  useSharedPresence(shared || null, sharedMailbox, presence);
+
   const composerRef = useRef<ComposerHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listReq = useRef(0);
-  const autoSelect = useRef(true);
+  const autoSelect = useRef(!initialThread);
 
   // ----- boot -----
   const load = useCallback(async () => {
@@ -254,7 +277,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
       const draft = o.ai && insight?.id === t.id ? insight.data?.draft : undefined;
       setCompose(newCompose({
         mode: 'reply', fromId, to, cc, showCc: cc.length > 0, subject: replySubject(t.subject), context: t,
-        reply: { threadId: t.id, messageIdHeader: incoming.messageIdHeader, references: incoming.references, rootId: msgs[0]?.messageIdHeader },
+        reply: { threadId: t.id, messageIdHeader: incoming.messageIdHeader, references: incoming.references, rootId: msgs[0]?.messageIdHeader, seenMessageId: last.id },
         quote: { who: incoming.from, time: incoming.time, text: incoming.text },
         html: draft || '', aiBar: !!o.ai,
         aiNote: draft ? { title: 'AI draft.', text: 'Based on this thread only. Review before sending.' } : null
@@ -278,7 +301,8 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
       if (r.scheduled) toast({ text: 'Scheduled for ' + msg.schedule!.when + '. Demo mode: it will not be sent.', action: 'View', onAction: () => go('scheduled', r.id) });
       else toast({ text: 'Recorded in demo mode. Not delivered.', action: 'View in Sent', onAction: () => go('sent', r.id) });
     } else {
-      toast({ text: 'Message sent.', action: 'View', onAction: () => go('sent', r.threadId) });
+      // Say which address Gmail sent from: in a shared mailbox the Worker checked it is one Gmail allows.
+      toast({ text: provider.mailbox ? 'Sent from ' + msg.identity.addr + '.' : 'Message sent.', action: 'View', onAction: () => go('sent', r.threadId) });
     }
   };
 
@@ -402,6 +426,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 onSnooze={() => thread && provider.snooze(thread.id).then(until => { removeFromList(thread.id); toast('Snoozed until ' + until); refreshCounts(); }).catch(e => toast({ text: errorText(e), error: true }))}
                 onDownload={download}
                 internal={notes ? { store: notes, authorName: boot.account.name, onChanged: refreshInternal } : null}
+                shared={shared && sharedMailbox && thread ? <SharedBar key={thread.id} api={shared} mailbox={sharedMailbox} threadId={thread.id} members={sharedMembers} /> : null}
               />
               {aiOpen && (
                 <AssistantPanel
@@ -449,8 +474,12 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
               onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))}
               onWrite={(email, name) => openCompose({ to: [{ name, email, org: '' }] })} />
           )}
+          {view === 'shared' && (
+            <SharedInboxes api={shared || null} providerFor={m => (m === provider.mailbox ? provider : providerFor!(m))}
+              onOpen={(m, id) => (m === provider.mailbox ? go('inbox', id) : onOpenShared?.(m, id))} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

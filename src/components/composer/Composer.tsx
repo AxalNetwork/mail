@@ -9,6 +9,7 @@ import { EmailSignature } from '../EmailSignature';
 import { usePopover } from '../usePopover';
 import { errorText, useToast } from '../Toast';
 import { isInternal, sendChecks, validateRecipients } from '../../lib/compose';
+import { ApiError } from '../../providers/gmail/client';
 import { clockTime, fileExt, formatSize, plural } from '../../lib/format';
 import { htmlToText } from '../../lib/html';
 import { assembleHtml, assembleText } from '../../lib/outgoing';
@@ -187,9 +188,17 @@ export function Composer(p: Props) {
     clearTimeout(timer.current);
     closed.current = true;
     await chain.current;
-    const msg = build(latest.current);
+    let msg = build(latest.current);
     try {
-      const r = await provider.send(msg);
+      let r: SentResult;
+      try {
+        r = await provider.send(msg);
+      } catch (e) {
+        // A shared mailbox found a newer reply or another assignee: send only if the user says so.
+        if (!(e instanceof ApiError && e.code === 'reply_conflict') || !window.confirm(e.message)) throw e;
+        msg = { ...msg, confirmShared: true };
+        r = await provider.send(msg);
+      }
       p.onSent(r, msg);
       p.onClosed();
     } catch (e) {

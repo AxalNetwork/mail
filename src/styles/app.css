@@ -711,3 +711,8 @@ button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 
 .trow.contacts-list.clickable { width: 100%; border: 0; border-bottom: 1px solid var(--line-2); background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .trow.contacts-list.clickable:hover { background: var(--surface-2); }
 .trow.contacts-list.clickable:hover b { color: var(--accent-strong); }
+
+/* Shared Inboxes */
+.shared-bar { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
+.input.sm { height: 28px; padding: 0 8px; font-size: 12.5px; }
+.shared-history { margin: 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 2px; }

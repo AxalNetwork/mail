@@ -27,7 +27,8 @@ export interface MailboxGrants {
   enabled: boolean;
   /** The mailbox the Worker's GMAIL_REFRESH_TOKEN opens, if any. */
   refreshTokenMailbox?: string | null;
-  mailboxes: { mailbox: string; members: string[] }[];
+  /** `readOnly`: members who may read and draft but not send as the mailbox. */
+  mailboxes: { mailbox: string; members: string[]; readOnly?: string[] }[];
 }
 
 /** Members, linked accounts and shared mailbox access (backend /api/admin/*). */
@@ -38,7 +39,8 @@ export interface AdminApi {
   unlink(googleEmail: string): Promise<void>;
   /** Super admins only. */
   mailboxes(): Promise<MailboxGrants>;
-  grantMailbox(mailbox: string, memberEmail: string): Promise<MailboxGrants>;
+  /** Give access, or change whether an existing member may send (`canSend`, default true). */
+  grantMailbox(mailbox: string, memberEmail: string, canSend?: boolean): Promise<MailboxGrants>;
   revokeMailbox(mailbox: string, memberEmail: string): Promise<MailboxGrants>;
 }
 
@@ -70,8 +72,8 @@ export class HttpAdminApi implements AdminApi {
   mailboxes() {
     return this.call<MailboxGrants>('/mailboxes');
   }
-  grantMailbox(mailbox: string, memberEmail: string) {
-    return this.call<MailboxGrants>('/mailboxes', { method: 'POST', body: JSON.stringify({ mailbox, memberEmail }) });
+  grantMailbox(mailbox: string, memberEmail: string, canSend = true) {
+    return this.call<MailboxGrants>('/mailboxes', { method: 'POST', body: JSON.stringify({ mailbox, memberEmail, canSend }) });
   }
   revokeMailbox(mailbox: string, memberEmail: string) {
     return this.call<MailboxGrants>('/mailboxes?mailbox=' + encodeURIComponent(mailbox) + '&memberEmail=' + encodeURIComponent(memberEmail), { method: 'DELETE' });
@@ -105,9 +107,11 @@ export class DemoAdminApi implements AdminApi {
   }
   async unlink(googleEmail: string) { this.list = this.list.map(m => ({ ...m, linked: m.linked.filter(x => x !== googleEmail) })); }
   async mailboxes() { return structuredClone(this.grants); }
-  async grantMailbox(mailbox: string, memberEmail: string) {
-    const g = this.grants.mailboxes.find(x => x.mailbox === mailbox);
-    if (g) { if (!g.members.includes(memberEmail)) g.members.push(memberEmail); } else this.grants.mailboxes.push({ mailbox, members: [memberEmail] });
+  async grantMailbox(mailbox: string, memberEmail: string, canSend = true) {
+    let g = this.grants.mailboxes.find(x => x.mailbox === mailbox);
+    if (!g) this.grants.mailboxes.push(g = { mailbox, members: [], readOnly: [] });
+    if (!g.members.includes(memberEmail)) g.members.push(memberEmail);
+    g.readOnly = (g.readOnly || []).filter(x => x !== memberEmail).concat(canSend ? [] : [memberEmail]);
     return this.mailboxes();
   }
   async revokeMailbox(mailbox: string, memberEmail: string) {
