@@ -135,6 +135,12 @@ UPDATE members SET status = 'suspended' WHERE email = 'julian@axal.vc';
 
 A suspension applies to new sign-ins at once, and to open sessions within 5 minutes.
 
+## Internal
+
+Every conversation has an **Internal** panel under its messages: notes (context such as "Potential LP, interested in AI infrastructure") and comments, visible to Axal VC members only and never part of an email. Type `@` to mention a teammate; mentions show up, unread first, on **Workspace → Internal** (with a count in the sidebar), next to the team's recent discussion. Clicking one opens the conversation in your own mailbox (found by its Message-ID). Authors edit their notes; authors or admins delete them (the text is wiped, the history keeps who did it). **History** lists who added, edited, deleted or mentioned, without note text.
+
+Notes are keyed by the conversation's first `Message-ID`, so teammates' copies of the same thread share one discussion. The internal note in the composer is saved here on send and never included in the message.
+
 ## Analytics and AI Automations
 
 **Analytics** (Workspace → Analytics) reads the metadata of your recent conversations (senders, recipients, times and bulk-mail headers; never bodies) straight from Gmail into the browser, for 7, 30 or 90 days (up to 300 or 500 conversations), and computes everything there. Nothing is stored. It shows volume per day, your and their median response times, message and contact reply rates, who is waiting on whom, sending hours and top contacts, with the definitions on each tile. A **Deliverability** panel checks the domain's MX, SPF, DKIM (Google selector) and DMARC records through the Worker (`GET /api/analytics/deliverability`, organization domains only). Opens, clicks, bounces and inbox placement aren't measured: a mailbox can't see them, and tracking pixels or links would need recipients' consent.
@@ -171,7 +177,9 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `GET /api/config` | Public settings for the frontend |
 | `GET /api/health` | Liveness |
 | `GET /api/session` | The member behind the token, or `403` with `code: not_linked` / `suspended` |
-| `GET /api/notes?key=<Message-ID>` · `POST /api/notes` | Internal notes for a conversation. They are keyed by the first message's `Message-ID`, which is the same in every teammate's mailbox (Gmail thread IDs are not). |
+| `GET /api/notes?key=<Message-ID>` · `POST /api/notes` | Internal notes and comments for a conversation (`kind`, `subject`, `mentions`). Keyed by the first message's `Message-ID`, the same in every teammate's mailbox (Gmail thread IDs are not). |
+| `PATCH/DELETE /api/notes/:id` · `GET /api/notes/activity?key=` | Edit (author) or delete (author or admin); the conversation's activity history |
+| `GET /api/internal` · `POST /api/internal/read` · `GET /api/internal/members` | Your mentions and the team's recent discussion; mark mentions read; who can be mentioned |
 | `POST /api/assistant/insight` | Summary, extracted points, suggested reply |
 | `POST /api/assistant/draft` | Draft from an instruction and/or the thread |
 | `POST /api/assistant/rewrite` | `shorter`, `formal`, `warmer`, `clarity`, `translate` (French) |
@@ -235,7 +243,7 @@ worker/                   Backend (Cloudflare Worker)
   src/sequences.ts        Outreach sequences API and the cron runner
   src/config.ts           OAuth client ID (Worker variable or build-time fallback)
   src/assistant.ts        Claude calls and prompts
-  src/notes.ts            D1 notes
+  src/notes.ts            Internal notes, comments, mentions and activity (D1)
   migrations/             D1 schema
 wrangler.jsonc            Worker, assets, custom domain, D1 binding
 public/_headers           Security headers for the static frontend

@@ -61,6 +61,8 @@ export interface MailProvider {
   /** Conversation metadata (senders, recipients, times; no content) for analytics. */
   conversations(days: number, cap?: number): Promise<ConversationSample>;
   getThread(id: string): Promise<Thread>;
+  /** Thread id of the conversation containing this RFC Message-ID, if it is in this mailbox. */
+  findThread?(messageId: string): Promise<string | null>;
 
   markRead(id: string, read: boolean): Promise<void>;
   setStarred(id: string, starred: boolean): Promise<void>;

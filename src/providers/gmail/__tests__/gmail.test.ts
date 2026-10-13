@@ -152,7 +152,19 @@ describe('GmailProvider', () => {
     expect(c.body).toContain('Content-Type: message/rfc822');
     expect(c.body).toContain('In-Reply-To: <id1@x>');
     expect(c.body).toContain('filename="n.txt"');
-    expect(JSON.parse(localStorage.getItem('axal.notes')!)['<id1@x>'][0].text).toContain('Priya joins Thursday');
+    // The internal note is stored for the team, and is nowhere in the email itself.
+    const stored = JSON.parse(localStorage.getItem('axal.notes.v2')!) as { key: string; text: string; subject: string }[];
+    expect(stored).toEqual([expect.objectContaining({ key: '<id1@x>', text: 'Priya joins Thursday', subject: 'Seed round' })]);
+    const parts = (c.body as string).split('Content-Transfer-Encoding: base64\r\n\r\n').slice(1)
+      .map(p => new TextDecoder().decode(Uint8Array.from(atob(p.split('\r\n--')[0].replace(/\r\n/g, '')), ch => ch.charCodeAt(0))));
+    expect(parts.length).toBeGreaterThan(1);
+    for (const p of [c.body as string, ...parts]) expect(p).not.toContain('Priya joins Thursday');
+  });
+
+  it('finds a conversation in this mailbox by the Message-ID that keys its internal notes', async () => {
+    const calls = mockFetch({ ...baseRoutes, 'GET /users/me/threads': () => ({ threads: [{ id: 't42' }] }) });
+    expect(await new GmailProvider(fakeAuth()).findThread('<root@mail.example>')).toBe('t42');
+    expect(calls.find(c => c.url.pathname.endsWith('/threads'))!.url.searchParams.get('q')).toBe('rfc822msgid:root@mail.example');
   });
 
   it('creates a draft, updates it in place, then sends the draft', async () => {

@@ -92,6 +92,8 @@ export interface AiInsight {
 export interface Thread extends ThreadSummary {
   messages: Message[];
   activity: ActivityEvent[];
+  /** Message-ID of the first message: the key of the conversation's internal notes. */
+  noteKey?: string;
   /** e.g. "Linked to Maya Chen · Northstar AI · Relationship owner: Julian Park" */
   linkText: string;
 }
