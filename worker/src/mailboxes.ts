@@ -31,7 +31,8 @@ export async function listForUser(env: Env, user: User): Promise<Response> {
  */
 const GMAIL_ROUTES: { re: RegExp; methods: string[] }[] = [
   { re: /^profile$/, methods: ['GET'] },
-  { re: /^labels(\/[\w-]+)?$/, methods: ['GET'] },
+  { re: /^labels$/, methods: ['GET', 'POST'] },
+  { re: /^labels\/[\w-]+$/, methods: ['GET'] },
   { re: /^threads$/, methods: ['GET'] },
   { re: /^threads\/[\w-]+$/, methods: ['GET'] },
   { re: /^threads\/[\w-]+\/(modify|trash|untrash)$/, methods: ['POST'] },

@@ -2,9 +2,37 @@ import type { Thread } from '../types';
 import { INSIGHTS } from '../providers/demo/data';
 import { writePersona, type PersonaKey } from '../lib/bulk';
 import { instructionDraft } from './offline';
-import type { Assistant, AiResult, DraftRequest, RewriteMode } from './types';
+import type { Assistant, AiResult, Briefing, Classification, DraftRequest, RewriteMode, TriageCategory, TriageItem } from './types';
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** Keyword rules standing in for the model in demo mode. */
+const RULES: [RegExp, TriageCategory][] = [
+  [/unsubscribe|newsletter|digest|weekly/i, 'Newsletter'],
+  [/\b(LP|limited partner|capital call|fund (I|II|III|IV)|commitment)\b/i, 'Investor'],
+  [/deck|pitch|raising|seed|series [abc]|pre-seed/i, 'Investment opportunity'],
+  [/board|portfolio|update|KPI|MRR|ARR/i, 'Portfolio company'],
+  [/founder/i, 'Founder'],
+  [/partner(ship)?|co-invest|syndicate/i, 'Partnership'],
+  [/event|summit|conference|dinner|panel|invite/i, 'Event'],
+  [/invoice|contract|signature|legal|tax|compliance|KYC/i, 'Administrative']
+];
+
+export function demoClassify(i: TriageItem): Classification {
+  const text = i.subject + ' ' + i.snippet;
+  const hit = RULES.find(([re]) => re.test(text));
+  const category = hit ? hit[1] : 'Other';
+  const urgent = /urgent|asap|today|by (mon|tue|wed|thu|fri)|deadline|eod/i.test(text);
+  const asks = text.match(/(?:can you|could you|please|would you)[^.?!]*[.?!]?/gi) || [];
+  const needsResponse = category !== 'Newsletter' && (asks.length > 0 || /\?/.test(i.snippet));
+  return {
+    id: i.id, category, urgent, needsResponse,
+    priority: urgent || category === 'Investor' ? 'high' : category === 'Newsletter' ? 'low' : 'normal',
+    confidence: hit ? 0.7 : 0.4,
+    explanation: hit ? 'Demo rule: the subject or preview mentions "' + (text.match(hit[0]) || [''])[0] + '".' : 'Demo rule: no keyword matched, so this is a guess.',
+    actionItems: asks.slice(0, 3).map(a => a.trim())
+  };
+}
 
 /** Canned assistant for demo mode: fixed insights per sample thread and simple text rewrites. */
 export class DemoAssistant implements Assistant {
@@ -46,5 +74,21 @@ export class DemoAssistant implements Assistant {
   async writePersona(persona: PersonaKey, _tone: string, brief: string) {
     await wait(900);
     return writePersona(persona, brief);
+  }
+
+  async classify(items: TriageItem[]): Promise<Classification[]> {
+    await wait(400);
+    return items.map(demoClassify);
+  }
+
+  async briefing(items: TriageItem[], followUps: number): Promise<Briefing> {
+    await wait(400);
+    const c = items.map(demoClassify).filter(r => r.category !== 'Newsletter');
+    const top = [...c].sort((a, b) => Number(b.urgent) - Number(a.urgent) || Number(b.priority === 'high') - Number(a.priority === 'high')).slice(0, 3);
+    return {
+      summary: c.length + ' conversations from people in your inbox' + (followUps ? ', and ' + followUps + ' follow-ups due.' : '.') + ' (Demo briefing from keyword rules.)',
+      priorities: top.map(r => ({ id: r.id, why: r.urgent ? 'Mentions a deadline.' : r.category + (r.needsResponse ? ', asks you something.' : '.') })),
+      commitments: []
+    };
   }
 }

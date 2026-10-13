@@ -212,3 +212,126 @@ export async function persona(env: Env, user: User, body: PersonaRequest) {
     'low'
   );
 }
+
+// ---------- inbox manager and daily briefing ----------
+
+/** One inbox conversation, as the inbox manager and briefing see it: metadata and the snippet only. */
+export interface TriageItem { id: string; subject: string; from: string; email: string; snippet: string; labels?: string[]; when?: string }
+
+export const CATEGORIES = ['Investor', 'Founder', 'Investment opportunity', 'Portfolio company', 'Partnership', 'Event', 'Administrative', 'Newsletter', 'Other'] as const;
+const MAX_TRIAGE = 25;
+
+function items(v: unknown): TriageItem[] {
+  if (!Array.isArray(v) || !v.length) throw new HttpError(400, 'items is required');
+  if (v.length > MAX_TRIAGE) throw new HttpError(400, 'At most ' + MAX_TRIAGE + ' conversations at a time');
+  const s = (x: unknown, n: number) => (typeof x === 'string' ? x.slice(0, n) : '');
+  return v.map((x: Record<string, unknown>) => {
+    const id = s(x?.id, 100);
+    if (!id) throw new HttpError(400, 'Each item needs an id');
+    return { id, subject: s(x.subject, 300), from: s(x.from, 200), email: s(x.email, 254), snippet: s(x.snippet, 600), labels: Array.isArray(x.labels) ? x.labels.map(l => s(l, 60)).slice(0, 8) : [], when: s(x.when, 40) };
+  });
+}
+
+function itemsBlock(list: TriageItem[]): string {
+  const esc = (t: string) => t.replace(/</g, '‹').replace(/>/g, '›');
+  return '<conversations>\n' + list.map(i =>
+    `<conversation id="${esc(i.id)}">\nFrom: ${esc(i.from)} <${esc(i.email)}>\nSubject: ${esc(i.subject)}\n` +
+    (i.when ? `When: ${esc(i.when)}\n` : '') + (i.labels?.length ? `Labels: ${esc(i.labels.join(', '))}\n` : '') +
+    `Preview: ${esc(i.snippet)}\n</conversation>`).join('\n') + '\n</conversations>';
+}
+
+const CLASSIFY_SCHEMA = {
+  type: 'object',
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The conversation id, exactly as given.' },
+          category: { type: 'string', enum: [...CATEGORIES] },
+          priority: { type: 'string', enum: ['high', 'normal', 'low'] },
+          urgent: { type: 'boolean', description: 'True only when the preview states a deadline or urgency.' },
+          needs_response: { type: 'boolean' },
+          confidence: { type: 'number', description: 'Your confidence in the category, 0 to 1.' },
+          explanation: { type: 'string', description: 'One short sentence: why this category and priority, from the sender and preview.' },
+          action_items: { type: 'array', items: { type: 'string' }, description: 'Concrete asks stated in the preview. Empty when none are stated.' }
+        },
+        required: ['id', 'category', 'priority', 'urgent', 'needs_response', 'confidence', 'explanation', 'action_items'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['results'],
+  additionalProperties: false
+};
+
+export interface Classification {
+  id: string; category: typeof CATEGORIES[number]; priority: 'high' | 'normal' | 'low'; urgent: boolean; needsResponse: boolean;
+  confidence: number; explanation: string; actionItems: string[];
+}
+
+/** Suggest a category, priority and next step per conversation. Suggestions only; nothing changes in Gmail. */
+export async function classify(env: Env, user: User, body: { items?: unknown; userName?: string }) {
+  const list = items(body.items);
+  const out = await structured<{ results: { id: string; category: string; priority: string; urgent: boolean; needs_response: boolean; confidence: number; explanation: string; action_items: string[] }[] }>(
+    env,
+    `${who(body.userName, user)}\n\n${itemsBlock(list)}\n\nFor each conversation, classify it for a venture capital partner's inbox: the category, a priority, whether it is urgent, whether it needs a response from the user, your confidence, a one-sentence explanation, and the action items the sender asks for. Base everything on the sender and preview only; say so in the explanation when the preview is too short to tell. Return one result per conversation id.`,
+    CLASSIFY_SCHEMA,
+    'low'
+  );
+  // Only ids we sent, once each; anything else the model returns is dropped.
+  const known = new Set(list.map(i => i.id));
+  const seen = new Set<string>();
+  const results: Classification[] = [];
+  for (const r of out.results) {
+    if (!known.has(r.id) || seen.has(r.id)) continue;
+    seen.add(r.id);
+    results.push({
+      id: r.id,
+      category: (CATEGORIES as readonly string[]).includes(r.category) ? r.category as Classification['category'] : 'Other',
+      priority: r.priority === 'high' || r.priority === 'low' ? r.priority : 'normal',
+      urgent: !!r.urgent, needsResponse: !!r.needs_response,
+      confidence: Math.max(0, Math.min(1, Number(r.confidence) || 0)),
+      explanation: String(r.explanation || '').slice(0, 300),
+      actionItems: (r.action_items || []).map(a => String(a).slice(0, 200)).slice(0, 5)
+    });
+  }
+  return { results };
+}
+
+const BRIEFING_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string', description: 'Two to four sentences: what came in and what matters most today.' },
+    priorities: {
+      type: 'array', description: 'Up to five conversations to handle first, most important first.',
+      items: { type: 'object', properties: { id: { type: 'string' }, why: { type: 'string' } }, required: ['id', 'why'], additionalProperties: false }
+    },
+    commitments: {
+      type: 'array', description: 'Dates, deadlines or meetings stated explicitly in a preview. Empty when none are stated.',
+      items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'], additionalProperties: false }
+    }
+  },
+  required: ['summary', 'priorities', 'commitments'],
+  additionalProperties: false
+};
+
+/** A short morning briefing grounded in the given conversations: every item cites one of them. */
+export async function briefing(env: Env, user: User, body: { items?: unknown; followUps?: unknown; userName?: string }) {
+  const list = items(body.items);
+  const followUps = Math.max(0, Math.min(999, Number(body.followUps) || 0));
+  const out = await structured<{ summary: string; priorities: { id: string; why: string }[]; commitments: { id: string; text: string }[] }>(
+    env,
+    `${who(body.userName, user)}\nConversations where the user wrote last and is still waiting: ${followUps}.\n\n${itemsBlock(list)}\n\n` +
+      'Write the user\'s briefing for today from these conversations only. Pick the ones to handle first and say why in a few words. List only commitments, deadlines or meetings that a preview states explicitly; never infer one. Refer to conversations by id.',
+    BRIEFING_SCHEMA,
+    'low'
+  );
+  const known = new Set(list.map(i => i.id));
+  return {
+    summary: String(out.summary || '').slice(0, 1200),
+    priorities: out.priorities.filter(p => known.has(p.id)).slice(0, 5).map(p => ({ id: p.id, why: String(p.why).slice(0, 200) })),
+    commitments: out.commitments.filter(c => known.has(c.id)).slice(0, 8).map(c => ({ id: c.id, text: String(c.text).slice(0, 200) }))
+  };
+}

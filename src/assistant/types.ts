@@ -20,6 +20,32 @@ export interface DraftRequest {
   recipientFirstName: string;
 }
 
+/** One inbox conversation as the inbox manager sees it: metadata and the preview only. */
+export interface TriageItem { id: string; subject: string; from: string; email: string; snippet: string; labels?: string[]; when?: string }
+
+export const TRIAGE_CATEGORIES = ['Investor', 'Founder', 'Investment opportunity', 'Portfolio company', 'Partnership', 'Event', 'Administrative', 'Newsletter', 'Other'] as const;
+export type TriageCategory = typeof TRIAGE_CATEGORIES[number];
+
+/** A suggestion for one conversation. Nothing in the mailbox changes until the user applies it. */
+export interface Classification {
+  id: string;
+  category: TriageCategory;
+  priority: 'high' | 'normal' | 'low';
+  urgent: boolean;
+  needsResponse: boolean;
+  /** 0 to 1. */
+  confidence: number;
+  explanation: string;
+  actionItems: string[];
+}
+
+/** A briefing whose every item points at one of the conversations it was given. */
+export interface Briefing {
+  summary: string;
+  priorities: { id: string; why: string }[];
+  commitments: { id: string; text: string }[];
+}
+
 export interface Assistant {
   /** A live model is connected (otherwise only offline templates are available). */
   readonly live: boolean;
@@ -29,4 +55,8 @@ export interface Assistant {
   draft(req: DraftRequest): Promise<AiResult>;
   rewrite(html: string, mode: RewriteMode, thread: Thread | null): Promise<AiResult>;
   writePersona(persona: PersonaKey, tone: string, brief: string): Promise<PersonaMessage>;
+  /** Suggest a category, priority and next step per conversation (null: needs the live assistant). */
+  classify(items: TriageItem[]): Promise<Classification[] | null>;
+  /** Today's briefing from these conversations (null: needs the live assistant). */
+  briefing(items: TriageItem[], followUps: number): Promise<Briefing | null>;
 }

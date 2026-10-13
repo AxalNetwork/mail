@@ -69,6 +69,8 @@ export interface MailProvider {
   archive(id: string): Promise<void>;
   trash(id: string): Promise<void>;
   snooze(id: string): Promise<string>;
+  /** Add a user label by name, creating it when it does not exist yet. Only call after the user confirmed. */
+  applyLabel?(id: string, name: string): Promise<void>;
 
   searchContacts(q: string): Promise<Contact[]>;
   documents(): Promise<DocumentRef[]>;

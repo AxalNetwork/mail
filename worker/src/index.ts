@@ -2,6 +2,7 @@ import type { Env } from './env';
 import { allowedDomains, authenticate } from './auth';
 import { HttpError, errorResponse, json, readJson } from './http';
 import * as notes from './notes';
+import * as automations from './automations';
 import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
@@ -85,6 +86,8 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/internal/read' && method === 'POST') { await notes.markRead(env, user, await readJson(req)); return json({ ok: true }); }
   if (path === '/api/internal/members' && method === 'GET') return json({ members: await notes.mentionable(env) });
 
+  if (path.startsWith('/api/automations/')) return automations.route(req, env, user, url);
+
   if (path === '/api/sequences/sender') {
     if (method === 'GET') return json({ sender: await senderStatus(env, user) });
     if (method === 'POST') return json({ sender: await connectSender(env, user, (await readJson<{ code?: unknown }>(req)).code) });
@@ -107,6 +110,8 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
       case 'draft': return json(await assistant.draft(env, user, await readJson(req)));
       case 'rewrite': return json(await assistant.rewrite(env, user, await readJson(req)));
       case 'persona': return json(await assistant.persona(env, user, await readJson(req)));
+      case 'classify': return json(await assistant.classify(env, user, await readJson(req)));
+      case 'briefing': return json(await assistant.briefing(env, user, await readJson(req)));
     }
   }
 

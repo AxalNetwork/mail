@@ -25,4 +25,6 @@ export class OfflineAssistant implements Assistant {
   async writePersona(persona: Parameters<typeof writePersona>[0], _tone: string, brief: string) {
     return writePersona(persona, brief);
   }
+  async classify() { return null; }
+  async briefing() { return null; }
 }
