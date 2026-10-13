@@ -15,6 +15,7 @@ import { MembersAdmin } from './components/admin/MembersAdmin';
 import { ROLE_LABEL, type AdminApi, type Role } from './admin/api';
 import { BugReportDialog } from './components/BugReportDialog';
 import { Analytics, type Deliverability } from './components/analytics/Analytics';
+import type { OutreachLoader } from './components/analytics/Outreach';
 import { Automations } from './components/automations/Automations';
 import { Sequences } from './components/automations/Sequences';
 import type { SequencesApi } from './lib/sequencesApi';
@@ -67,6 +68,8 @@ interface Props {
   onOpenShared?: (mailbox: string, threadId: string) => void;
   /** Conversation to open first (after switching mailbox). */
   initialThread?: string | null;
+  /** Outreach sequence figures for Analytics (backend). */
+  outreach?: OutreachLoader | null;
 }
 
 interface ListState {
@@ -86,7 +89,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach }: Props) {
   const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
@@ -451,7 +454,8 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           {view === 'members' && <MembersAdmin api={admin || null} role={role || 'member'} demo={demo} />}
           {view === 'analytics' && (
             <Analytics provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''}
-              deliverability={deliverability} onOpen={id => go('inbox', id)} />
+              deliverability={deliverability} onOpen={id => go('inbox', id)}
+              shared={shared || null} providerFor={providerFor} outreach={outreach || null} />
           )}
           {view === 'automations' && (
             <Automations provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''} assistant={assistant} dismissals={dismissalStore}

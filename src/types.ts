@@ -234,6 +234,8 @@ export interface DraftContent {
 
 /** One message of a conversation, as analytics sees it: who, when, never content. */
 export interface ConvMessage {
+  /** RFC Message-ID (or the provider's id): the same message seen twice, e.g. in two mailboxes, counts once. */
+  id?: string;
   /** Sender address, lowercased. */
   from: string;
   fromName: string;

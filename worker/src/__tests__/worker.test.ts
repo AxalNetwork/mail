@@ -1044,3 +1044,77 @@ describe('shared inboxes', () => {
     expect(fromHeader('To: a@b.c\r\n\r\nFrom: team@axal.vc')).toBe('');
   });
 });
+
+describe('outreach and team analytics', () => {
+  const db = () => env.DB as unknown as { exec: (s: string) => void };
+  const DAYMS = 86_400_000;
+  const now = Date.now();
+
+  function seed() {
+    db().exec(`INSERT INTO members (email, name, status, role, created_at) VALUES ('ada@axal.vc', 'Ada', 'active', 'admin', 0), ('julian@axal.vc', 'Julian', 'active', 'member', 0), ('priya@axal.vc', 'Priya', 'active', 'member', 0);
+      INSERT INTO sequences (id, owner_email, name, status, version, approved_version, created_at, updated_at) VALUES
+        (1, 'julian@axal.vc', 'Fund II LPs', 'active', 1, 1, ${now - 5 * DAYMS}, ${now}),
+        (2, 'julian@axal.vc', 'Draft intro', 'draft', 1, NULL, ${now - 60 * DAYMS}, ${now}),
+        (3, 'priya@axal.vc', 'Founders', 'completed', 1, 1, ${now - 2 * DAYMS}, ${now});
+      INSERT INTO sequence_enrollments (id, sequence_id, email, status, created_at) VALUES
+        (10, 1, 'a@lp.example', 'replied', 0), (11, 1, 'b@lp.example', 'bounced', 0), (12, 1, 'c@lp.example', 'active', 0), (13, 1, 'd@lp.example', 'opted_out', 0), (14, 1, 'e@lp.example', 'failed', 0),
+        (20, 2, 'x@lp.example', 'pending', 0), (30, 3, 'f@founder.example', 'completed', 0);
+      INSERT INTO sequence_sends (enrollment_id, step, status, created_at) VALUES
+        (10, 0, 'sent', ${now - 4 * DAYMS}), (11, 0, 'sent', ${now - 4 * DAYMS}), (12, 0, 'sent', ${now - 4 * DAYMS}), (12, 1, 'sending', ${now - DAYMS}), (13, 0, 'sent', ${now - 40 * DAYMS}),
+        (14, 0, 'failed', ${now - 3 * DAYMS}), (30, 0, 'sent', ${now - DAYMS});`);
+  }
+  type O = { scope: string; delivery: string; totals: Record<string, number>; sequences: { id: number; accepted: number; failed: number; unconfirmed: number; awaitingApproval: boolean; byStatus: Record<string, number> }[] };
+
+  it('separates accepted by Gmail, failed and unconfirmed sends, and never claims delivery', async () => {
+    seed();
+    const r = await (await call('/api/analytics/outreach?from=' + (now - 30 * DAYMS) + '&to=' + now, { token: 'good' })).json() as O;
+    expect(r.scope).toBe('mine');
+    expect(r.delivery).toBe('unknown');
+    expect(r.sequences.map(s => s.id)).toEqual([1, 2]); // Julian's own only
+    expect(r.sequences[0]).toMatchObject({ accepted: 3, failed: 1, unconfirmed: 1, awaitingApproval: false, byStatus: { replied: 1, bounced: 1, opted_out: 1, failed: 1, active: 1 } });
+    // The opt-out's send was 40 days ago: outside the period, so not counted as accepted in it.
+    expect(r.totals).toMatchObject({ campaignsCreated: 1, awaitingApproval: 1, accepted: 3, failed: 1, unconfirmed: 1, replied: 1, bounced: 1, optedOut: 1, recipientsFailed: 1 });
+    expect(JSON.stringify(r)).not.toMatch(/open|click/i);
+  });
+
+  it('shows admins everyone’s outreach', async () => {
+    seed();
+    const r = await (await call('/api/analytics/outreach', { token: 'ada' })).json() as O;
+    expect(r.scope).toBe('all');
+    expect(r.sequences.map(s => s.id).sort()).toEqual([1, 2, 3]);
+    expect(r.totals.accepted).toBe(4);
+    expect((await call('/api/analytics/outreach?from=10&to=5', { token: 'ada' })).status).toBe(400);
+    expect((await call('/api/analytics/outreach')).status).toBe(401);
+  });
+
+  it('summarizes a shared mailbox’s workload for its members only, without ranking', async () => {
+    env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
+    db().exec(`INSERT INTO mailbox_access (mailbox, member_email, created_at) VALUES ('deals@axal.vc', 'julian@axal.vc', 0), ('deals@axal.vc', 'priya@axal.vc', 0);
+      INSERT INTO shared_conversations (mailbox, thread_id, status, assignee, version, updated_by, updated_at) VALUES
+        ('deals@axal.vc', 's1', 'open', 'priya@axal.vc', 1, 'x', 0), ('deals@axal.vc', 's2', 'pending', 'priya@axal.vc', 1, 'x', 0),
+        ('deals@axal.vc', 's3', 'open', NULL, 1, 'x', 0), ('deals@axal.vc', 's4', 'resolved', 'julian@axal.vc', 1, 'x', 0),
+        ('ir@axal.vc', 's9', 'open', NULL, 1, 'x', 0);
+      INSERT INTO shared_activity (mailbox, thread_id, actor, action, detail, created_at) VALUES
+        ('deals@axal.vc', 's1', 'priya@axal.vc', 'replied', 'deals@axal.vc', ${now - DAYMS}), ('deals@axal.vc', 's4', 'julian@axal.vc', 'replied', 'deals@axal.vc', ${now - 50 * DAYMS}),
+        ('deals@axal.vc', 's1', 'priya@axal.vc', 'claimed', 'priya@axal.vc', ${now - DAYMS});`);
+    const r = await (await call('/api/shared/deals%40axal.vc/summary?from=' + (now - 30 * DAYMS) + '&to=' + now, { token: 'good' })).json();
+    expect(r).toMatchObject({
+      byStatus: { open: 2, pending: 1, resolved: 1 }, unassignedTracked: 1,
+      workload: [
+        { email: 'julian@axal.vc', open: 0, pending: 0, resolved: 1, replies: 0, assignmentsTaken: 0 },
+        { email: 'priya@axal.vc', open: 1, pending: 1, resolved: 0, replies: 1, assignmentsTaken: 1 }
+      ]
+    });
+    expect((await call('/api/shared/deals%40axal.vc/summary', { token: 'ada' })).status).toBe(403);
+    expect((await call('/api/shared/ir%40axal.vc/summary', { token: 'good' })).status).toBe(403);
+  });
+});
+
+describe('a database behind the code', () => {
+  it('says a migration is missing instead of “Internal error”', async () => {
+    (env.DB as unknown as { exec: (s: string) => void }).exec('DROP TABLE note_mentions');
+    const r = await call('/api/internal', { token: 'good' });
+    expect(r.status).toBe(503);
+    expect(await r.json()).toMatchObject({ code: 'schema_outdated', error: expect.stringContaining('database update') });
+  });
+});

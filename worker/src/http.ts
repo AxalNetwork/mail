@@ -17,8 +17,15 @@ export function json(data: unknown, status = 200, headers: Record<string, string
   });
 }
 
+/** D1 errors that mean a migration in worker/migrations hasn't been applied to this database yet. */
+const SCHEMA_BEHIND = /no such (table|column)|has no column named/i;
+
 export function errorResponse(e: unknown): Response {
   if (e instanceof HttpError) return json({ error: e.message, ...(e.code ? { code: e.code } : {}) }, e.status);
+  if (e instanceof Error && SCHEMA_BEHIND.test(e.message)) {
+    console.error('Database schema is behind the code:', e.message);
+    return json({ error: 'This feature needs a database update that hasn’t been applied yet. An administrator runs the pending migrations (npm run db:migrate).', code: 'schema_outdated' }, 503);
+  }
   console.error('Unhandled error', e);
   return json({ error: 'Internal error' }, 500);
 }
