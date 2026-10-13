@@ -99,7 +99,7 @@ describe('inbox manager', () => {
     expect(await screen.findByText('Suggestions need the assistant (ANTHROPIC_API_KEY on the Worker).')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Suggest labels and priorities' })).not.toBeInTheDocument();
     const audit = screen.getByLabelText('Automation status');
-    expect(within(audit).getByText('Email-to-CRM').parentElement).toHaveTextContent(/Blocked.*Contacts \(issue #5\)/);
+    expect(within(audit).getByText('Email-to-CRM').parentElement).toHaveTextContent(/Partial.*for you to review/);
     expect(within(audit).getByText('Automatic sending').parentElement).toHaveTextContent(/Off by design/);
   });
 });

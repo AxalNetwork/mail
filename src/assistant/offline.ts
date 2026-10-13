@@ -27,4 +27,5 @@ export class OfflineAssistant implements Assistant {
   }
   async classify() { return null; }
   async briefing() { return null; }
+  async relationship() { return null; }
 }

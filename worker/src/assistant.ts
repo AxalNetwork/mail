@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { User } from './auth';
 import type { Env } from './env';
+import { contactForAssistant } from './contacts';
 import { HttpError, paragraphsToHtml } from './http';
 
 const MODEL = 'claude-opus-5-5';
@@ -333,5 +334,86 @@ export async function briefing(env: Env, user: User, body: { items?: unknown; fo
     summary: String(out.summary || '').slice(0, 1200),
     priorities: out.priorities.filter(p => known.has(p.id)).slice(0, 5).map(p => ({ id: p.id, why: String(p.why).slice(0, 200) })),
     commitments: out.commitments.filter(c => known.has(c.id)).slice(0, 8).map(c => ({ id: c.id, text: String(c.text).slice(0, 200) }))
+  };
+}
+
+// ---------- relationship summaries and meeting briefings ----------
+
+interface RelConversation { id: string; subject: string; messages: { from: string; fromMe: boolean; at: number; text: string }[] }
+
+function relConversations(v: unknown): RelConversation[] {
+  if (!Array.isArray(v)) throw new HttpError(400, 'conversations must be a list');
+  const s = (x: unknown, n: number) => (typeof x === 'string' ? x.slice(0, n) : '');
+  return v.slice(0, 8).map((c: Record<string, unknown>) => {
+    const id = s(c?.id, 100);
+    if (!id) throw new HttpError(400, 'Each conversation needs an id');
+    const msgs = Array.isArray(c.messages) ? c.messages.slice(-4) : [];
+    return {
+      id, subject: s(c.subject, 300),
+      messages: msgs.map((m: Record<string, unknown>) => ({ from: s(m?.from, 254), fromMe: !!m?.fromMe, at: Number(m?.at) || 0, text: s(m?.text, 1500) }))
+    };
+  });
+}
+
+const SOURCED = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: { text: { type: 'string' }, sources: { type: 'array', items: { type: 'string' }, description: 'Ids of the conversations (or "record") this comes from.' } },
+    required: ['text', 'sources'], additionalProperties: false
+  }
+};
+
+const RELATIONSHIP_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string', description: 'Two to four sentences on the relationship, from the record and conversations only.' },
+    facts: { ...SOURCED, description: 'Things stated in a conversation or the record, each with its source ids.' },
+    inferences: { ...SOURCED, description: 'Your interpretations, clearly not stated anywhere. Sources are the conversations they are based on.' },
+    open_questions: { ...SOURCED, description: 'Questions asked in a conversation that have not been answered yet.' },
+    commitments: { ...SOURCED, description: 'Explicit promises made by either side, quoted closely. Empty when none are stated.' },
+    next_steps: { type: 'array', items: { type: 'string' }, description: 'Suggested next steps (for a meeting briefing: talking points). These are suggestions.' }
+  },
+  required: ['summary', 'facts', 'inferences', 'open_questions', 'commitments', 'next_steps'],
+  additionalProperties: false
+};
+
+export interface Sourced { text: string; sources: string[] }
+
+/** A relationship summary or meeting briefing. Facts, questions and commitments must cite a conversation or the record, or they are dropped. */
+export async function relationship(env: Env, user: User, body: { contactId?: unknown; conversations?: unknown; mode?: unknown; userName?: string }) {
+  const { contact, events } = await contactForAssistant(env, user, body.contactId);
+  const convs = relConversations(body.conversations ?? []);
+  const mode = body.mode === 'meeting' ? 'meeting' : 'summary';
+  const esc = (t: string) => t.replace(/</g, '‹').replace(/>/g, '›');
+  const record = `<record id="record">\nName: ${esc(contact.name)}\nEmails: ${contact.emails.join(', ')}\nTitle: ${esc(contact.title)}\n` +
+    `Organization: ${esc(contact.organization?.name || '')}\nTags: ${esc(contact.tags.join(', '))}\nTeam notes: ${esc(contact.notes)}\n` +
+    (events.length ? 'Recorded events:\n' + events.slice(0, 20).map(e => `- ${e.kind} on ${new Date(e.occurredAt).toISOString().slice(0, 10)}: ${esc(e.text)}`).join('\n') + '\n' : '') +
+    '</record>';
+  const conversations = convs.map(c => `<conversation id="${esc(c.id)}" subject="${esc(c.subject).replace(/"/g, "'")}">\n` +
+    c.messages.map(m => `<message from="${m.fromMe ? 'the user' : esc(m.from)}" date="${m.at ? new Date(m.at).toISOString().slice(0, 10) : 'unknown'}">\n${esc(m.text)}\n</message>`).join('\n') +
+    '\n</conversation>').join('\n');
+  const task = mode === 'meeting'
+    ? 'Prepare the user for a meeting with this person: who they are, where things stand, open questions, prior commitments, and talking points (as next_steps).'
+    : 'Summarize the user\'s relationship with this person: where things stand, open questions, prior commitments, and suggested next steps.';
+  const out = await structured<{ summary: string; facts: Sourced[]; inferences: Sourced[]; open_questions: Sourced[]; commitments: Sourced[]; next_steps: string[] }>(
+    env,
+    `${who(body.userName, user)}\n\n${record}\n\n<conversations>\n${conversations || '(none available)'}\n</conversations>\n\n${task} ` +
+      'Put only what a conversation or the record states into facts, open_questions and commitments, and cite the ids. Anything you conclude yourself goes into inferences. Do not invent mutual connections, introductions, meetings or history.',
+    RELATIONSHIP_SCHEMA,
+    'medium'
+  );
+  const known = new Set(['record', ...convs.map(c => c.id)]);
+  const keep = (list: Sourced[], needSource: boolean) => list
+    .map(x => ({ text: String(x.text).slice(0, 400), sources: [...new Set((x.sources || []).filter(s => known.has(s)))] }))
+    .filter(x => x.text && (!needSource || x.sources.length)).slice(0, 10);
+  return {
+    mode,
+    summary: String(out.summary || '').slice(0, 1500),
+    facts: keep(out.facts, true),
+    inferences: keep(out.inferences, false),
+    openQuestions: keep(out.open_questions, true),
+    commitments: keep(out.commitments, true),
+    nextSteps: (out.next_steps || []).map(s => String(s).slice(0, 300)).slice(0, 8)
   };
 }

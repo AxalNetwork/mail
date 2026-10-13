@@ -39,3 +39,16 @@ export function useStats(provider: MailProvider, days: number, orgDomain: string
   }, [provider, days, orgDomain, nonce]);
   return { ...state, reload: () => setNonce(n => n + 1) };
 }
+
+/** The raw conversation sample (metadata only), shared with Analytics through the same cache. */
+export function useSample(provider: MailProvider, days: number): { sample: ConversationSample | null; error: string | null; loading: boolean } {
+  const [state, setState] = useState<{ sample: ConversationSample | null; error: string | null; loading: boolean }>({ sample: null, error: null, loading: true });
+  useEffect(() => {
+    let live = true;
+    sample(provider, days, false)
+      .then(r => live && setState({ sample: r, error: null, loading: false }))
+      .catch(e => live && setState({ sample: null, error: e instanceof Error ? e.message : String(e), loading: false }));
+    return () => { live = false; };
+  }, [provider, days]);
+  return state;
+}

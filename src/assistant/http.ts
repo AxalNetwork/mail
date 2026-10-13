@@ -1,6 +1,6 @@
 import type { AiInsight, Thread } from '../types';
 import type { PersonaKey, PersonaMessage } from '../lib/bulk';
-import type { Assistant, AiResult, Briefing, Classification, DraftRequest, RewriteMode, TriageItem } from './types';
+import type { Assistant, AiResult, Briefing, Classification, DraftRequest, RelationshipBrief, RelationshipConversation, RewriteMode, TriageItem } from './types';
 import { htmlToText } from '../lib/html';
 
 /**
@@ -13,6 +13,7 @@ import { htmlToText } from '../lib/html';
  *   POST {base}/persona  { persona, tone, brief }           → { subject, body }
  *   POST {base}/classify { items }                          → { results: Classification[] }
  *   POST {base}/briefing { items, followUps }               → Briefing
+ *   POST {base}/relationship { contactId, conversations, mode } → RelationshipBrief
  *
  * The caller's Google access token is forwarded as a Bearer token so the
  * backend can verify who is asking.
@@ -52,4 +53,7 @@ export class HttpAssistant implements Assistant {
   writePersona(persona: PersonaKey, tone: string, brief: string) { return this.post<PersonaMessage>('/persona', { persona, tone, brief }); }
   async classify(items: TriageItem[]): Promise<Classification[]> { return (await this.post<{ results: Classification[] }>('/classify', { items })).results; }
   briefing(items: TriageItem[], followUps: number) { return this.post<Briefing>('/briefing', { items, followUps }); }
+  relationship(contactId: number, conversations: RelationshipConversation[], mode: 'summary' | 'meeting') {
+    return this.post<RelationshipBrief>('/relationship', { contactId, conversations, mode });
+  }
 }

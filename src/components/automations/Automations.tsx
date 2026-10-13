@@ -36,7 +36,7 @@ function audit(live: boolean): { name: string; status: Status; note: string }[] 
     { name: 'Follow-up agent', status: 'Operational', note: 'Finds conversations where you wrote last more than 3 days ago. Dismissed ones stay hidden until the conversation moves on.' },
     { name: 'Investor outreach sequences', status: 'Operational', note: 'Admin approval, then server sends from your Gmail once you connect sending. Replies and unsubscribes stop them.' },
     { name: 'Security & deliverability monitoring', status: 'Operational', note: 'SPF, DKIM, DMARC and MX checks in Analytics.' },
-    { name: 'Email-to-CRM', status: 'Blocked', note: 'Waits on Contacts (issue #5): there is no contact store to write people, companies and next steps to.' },
+    { name: 'Email-to-CRM', status: 'Partial', note: 'Contacts & Relationships suggests people and organizations from your email for you to review; nothing is created or enriched automatically.' },
     { name: 'Meeting scheduling agent', status: 'Planned', note: 'Needs Google Calendar access, a new permission every member would grant.' },
     { name: 'Support agent', status: 'Planned', note: 'Needs a shared support inbox (issue #6) and an approved answer base.' },
     { name: 'Document processing', status: 'Planned', note: 'Needs Documents (issue #7) and confidentiality rules per document.' },

@@ -91,4 +91,7 @@ export class DemoAssistant implements Assistant {
       commitments: []
     };
   }
+
+  /** Records live in the backend, which demo mode does not have. */
+  async relationship() { return null; }
 }
