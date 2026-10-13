@@ -5,12 +5,14 @@ import { DatabaseSync } from 'node:sqlite';
 import worker from '../index';
 import { clearAuthCache } from '../auth';
 import { clearDelegationCache } from '../delegation';
+import { clearSenderCache } from '../senders';
+import { runDue } from '../sequences';
 import type { Env } from '../env';
 
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -20,7 +22,7 @@ function fakeD1(): D1Database {
         bind(...p: unknown[]) { params = p; return stmt; },
         async all() { return { results: db.prepare(sql).all(...(params as never[])) }; },
         async first() { return db.prepare(sql).get(...(params as never[])) ?? null; },
-        async run() { const r = db.prepare(sql).run(...(params as never[])); return { meta: { last_row_id: Number(r.lastInsertRowid) } }; }
+        async run() { const r = db.prepare(sql).run(...(params as never[])); return { meta: { last_row_id: Number(r.lastInsertRowid), changes: Number(r.changes) } }; }
       };
       return stmt;
     },
@@ -36,6 +38,10 @@ let gmailCalls: { url: string; method: string; auth: string | null; body: string
 let delegationError: string | null;
 let githubCalls: { url: string; auth: string | null; body: Record<string, unknown> }[];
 let githubStatus: number[];
+let sends: { raw: string; threadId?: string; auth: string | null }[];
+let sendMode: string[];
+let threads: Record<string, unknown[]>;
+let revokedGrant: boolean;
 
 function mockFetch(tokens: Record<string, Record<string, unknown>>) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -47,6 +53,13 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
     }
     if (url.hostname === 'oauth2.googleapis.com' && url.pathname === '/token') {
       const form = new URLSearchParams(await req.text());
+      if (form.get('grant_type') === 'authorization_code') {
+        if (form.get('code') !== 'good-code' || form.get('client_secret') !== 'shh' || form.get('redirect_uri') !== 'postmessage') return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        return Response.json({ access_token: 'at-julian', refresh_token: 'rt-julian', expires_in: 3600, scope: 'openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly' });
+      }
+      if (form.get('grant_type') === 'refresh_token' && form.get('refresh_token') === 'rt-julian') {
+        return revokedGrant ? Response.json({ error: 'invalid_grant' }, { status: 400 }) : Response.json({ access_token: 'at-julian', expires_in: 3600 });
+      }
       if (form.get('grant_type') === 'refresh_token') {
         if (form.get('refresh_token') !== 'rt-ir' || form.get('client_secret') !== 'shh' || form.get('client_id') !== 'client-1') return Response.json({ error: 'invalid_grant' }, { status: 400 });
         return Response.json({ access_token: 'dwd:ir@axal.vc', expires_in: 3600 });
@@ -56,6 +69,24 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
       if (delegationError) return Response.json({ error: delegationError }, { status: 401 });
       return Response.json({ access_token: 'dwd:' + claims.sub, expires_in: 3600 });
     }
+    if (url.hostname === 'gmail.googleapis.com' && url.pathname === '/gmail/v1/users/me/messages/send') {
+      const body = await req.json() as { raw: string; threadId?: string };
+      const mode = sendMode.shift() ?? 'ok';
+      if (mode === 'throw') throw new TypeError('network down');
+      if (mode === '500') return Response.json({ error: { message: 'Backend Error' } }, { status: 500 });
+      if (mode === '400') return Response.json({ error: { message: 'Invalid To header' } }, { status: 400 });
+      const raw = new TextDecoder().decode(Uint8Array.from(atob(body.raw.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)));
+      sends.push({ raw, threadId: body.threadId, auth: req.headers.get('Authorization') });
+      return Response.json({ id: 'msg' + sends.length, threadId: body.threadId || 'th' + sends.length });
+    }
+    if (url.hostname === 'gmail.googleapis.com' && /\/messages\/msg\d+$/.test(url.pathname)) {
+      return Response.json({ id: 'x', threadId: 'x', payload: { headers: [{ name: 'Message-ID', value: '<' + url.pathname.split('/').pop() + '@mail.gmail.com>' }] } });
+    }
+    if (url.hostname === 'gmail.googleapis.com' && url.pathname.includes('/threads/th')) {
+      const id = url.pathname.split('/').pop()!;
+      return Response.json({ id, messages: threads[id] || [] });
+    }
+    if (url.hostname === 'oauth2.googleapis.com' && url.pathname === '/revoke') return new Response('', { status: 200 });
     if (url.hostname === 'gmail.googleapis.com') {
       gmailCalls.push({ url: url.pathname + url.search, method: req.method, auth: req.headers.get('Authorization'), body: req.method === 'GET' ? '' : await req.text() });
       if (url.pathname.endsWith('/profile')) return Response.json({ emailAddress: (req.headers.get('Authorization') || '').replace('Bearer dwd:', '') });
@@ -123,6 +154,11 @@ beforeEach(() => {
   delegationError = null;
   githubCalls = [];
   githubStatus = [];
+  sends = [];
+  sendMode = [];
+  threads = {};
+  revokedGrant = false;
+  clearSenderCache();
   env = {
     ASSETS: { fetch: vi.fn(async () => new Response('<!doctype html>app', { headers: { 'Content-Type': 'text/html' } })) } as unknown as Fetcher,
     DB: fakeD1(), GOOGLE_CLIENT_ID: 'client-1', ALLOWED_DOMAINS: 'axal.vc', ORG_DOMAIN: 'axal.vc', ANTHROPIC_API_KEY: 'sk-test',
@@ -137,6 +173,7 @@ beforeEach(() => {
     boss: { ...good, email: 'boss@axal.vc' },
     ada: { ...good, email: 'ada@axal.vc' },
     built: { ...good, aud: 'built-1' },
+    'at-julian': { ...good },
     unverified: { ...good, email_verified: 'false' }
   });
 });
@@ -447,5 +484,150 @@ describe('deliverability', () => {
     expect(j.checks.find(c => c.key === 'dmarc')!.summary).toContain('monitor only');
     expect((await call('/api/analytics/deliverability?domain=evil.example', { token: 'good' })).status).toBe(400);
     expect((await call('/api/analytics/deliverability')).status).toBe(401);
+  });
+});
+
+describe('outreach sequences', () => {
+  const KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, i) => i + 1)));
+  const DAY = 86_400_000;
+  const seq = {
+    name: 'Fund II LPs',
+    signatureHtml: '<table><tr><td>Julian Park</td></tr></table>', signatureText: 'Julian Park\nManaging Partner',
+    steps: [
+      { subject: 'Axal VC Fund II, {first_name}', body: 'Hi {first_name},\n\n{opening}We are raising Fund II.' },
+      { delayDays: 3, subject: '', body: 'Hi {first_name}, following up on my note.' }
+    ],
+    recipients: [
+      { email: 'Lena@Kestrel.example', firstName: 'Lena', company: 'Kestrel', context: 'our call in May' },
+      { email: 'omar@harbor.example', firstName: 'Omar' }
+    ]
+  };
+  const put = (path: string, token: string, body: unknown) => call(path, { method: 'PUT', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+  type Seq = { id: number; status: string; version: number; approved: unknown; lastError: string | null; recipients: { id: number; email: string; status: string; nextStep: number; lastError: string | null }[] };
+  const get = async (id: number) => ((await (await call('/api/sequences/' + id, { token: 'good' })).json()) as { sequence: Seq }).sequence;
+
+  beforeEach(() => {
+    env.TOKEN_ENCRYPTION_KEY = KEY;
+    env.GOOGLE_CLIENT_SECRET = 'shh';
+  });
+
+  async function connectedApprovedStarted(): Promise<Seq> {
+    expect((await post('/api/sequences/sender', 'good', { code: 'good-code' })).status).toBe(200);
+    const created = ((await (await post('/api/sequences', 'good', seq)).json()) as { sequence: Seq }).sequence;
+    expect((await post('/api/sequences/' + created.id + '/approve', 'boss', { version: created.version })).status).toBe(200);
+    const started = await post('/api/sequences/' + created.id + '/start', 'good', {});
+    expect(started.status).toBe(200);
+    return ((await started.json()) as { sequence: Seq }).sequence;
+  }
+
+  it('connects sending with an encrypted refresh token for the signed-in account only', async () => {
+    expect(await (await call('/api/sequences/sender', { token: 'good' })).json()).toMatchObject({ sender: { connected: false, canConnect: true } });
+    expect((await post('/api/sequences/sender', 'good', { code: 'bad' })).status).toBe(400);
+    const r = await post('/api/sequences/sender', 'good', { code: 'good-code' });
+    expect(await r.json()).toMatchObject({ sender: { connected: true, via: 'grant', googleEmail: 'julian@axal.vc' } });
+    const row = await env.DB.prepare('SELECT refresh_token FROM sender_credentials').first<{ refresh_token: string }>();
+    expect(row!.refresh_token).not.toContain('rt-julian');
+    // A grant from another Google account is refused.
+    expect((await post('/api/sequences/sender', 'priya', { code: 'good-code' })).status).toBe(403);
+    expect(await (await call('/api/sequences/sender', { method: 'DELETE', token: 'good', headers: { Origin: ORIGIN } })).json()).toMatchObject({ sender: { connected: false } });
+    env.TOKEN_ENCRYPTION_KEY = undefined;
+    expect((await post('/api/sequences/sender', 'good', { code: 'good-code' })).status).toBe(503);
+  });
+
+  it('validates sequences', async () => {
+    expect((await post('/api/sequences', 'good', { ...seq, steps: [] })).status).toBe(400);
+    expect((await post('/api/sequences', 'good', { ...seq, steps: [seq.steps[0], { ...seq.steps[1], delayDays: 0 }] })).status).toBe(400);
+    expect((await post('/api/sequences', 'good', { ...seq, recipients: [{ email: 'priya@axal.vc' }] })).status).toBe(400);
+    expect((await post('/api/sequences', 'good', { ...seq, recipients: [{ email: 'a@x.example' }, { email: 'A@x.example' }] })).status).toBe(400);
+    expect((await post('/api/sequences', 'good', { ...seq, steps: [{ subject: 'Hi {nickname}', body: 'x' }] })).status).toBe(400);
+  });
+
+  it('needs an admin approval of the current version before anything sends', async () => {
+    await post('/api/sequences/sender', 'good', { code: 'good-code' });
+    const s = ((await (await post('/api/sequences', 'good', seq)).json()) as { sequence: Seq }).sequence;
+    expect(s.status).toBe('draft');
+    expect((await post('/api/sequences/' + s.id + '/start', 'good', {})).status).toBe(409);
+    expect((await post('/api/sequences/' + s.id + '/approve', 'good', { version: s.version })).status).toBe(403);
+    expect((await post('/api/sequences/' + s.id + '/approve', 'boss', { version: s.version + 1 })).status).toBe(409);
+    expect((await post('/api/sequences/' + s.id + '/approve', 'boss', { version: s.version })).status).toBe(200);
+    // An edit after approval invalidates it.
+    const edited = ((await (await put('/api/sequences/' + s.id, 'good', { ...seq, name: 'Fund II LPs v2' })).json()) as { sequence: Seq }).sequence;
+    expect(edited).toMatchObject({ status: 'draft', approved: null, version: s.version + 1 });
+    expect((await post('/api/sequences/' + s.id + '/start', 'good', {})).status).toBe(409);
+    expect(await runDue(env)).toMatchObject({ sent: 0 });
+    // Other members can't see it.
+    expect((await call('/api/sequences/' + s.id, { token: 'ada' })).status).toBe(404);
+  });
+
+  it('sends step 1 once, then the follow-up as a reply in the same thread', async () => {
+    const s = await connectedApprovedStarted();
+    const t0 = Date.now() + 1000;
+    expect(await runDue(env, t0)).toMatchObject({ sent: 2 });
+    expect(await runDue(env, t0)).toMatchObject({ sent: 0 });
+    expect(sends).toHaveLength(2);
+    expect(sends[0].auth).toBe('Bearer at-julian');
+    expect(sends[0].raw).toMatch(/To: "?Lena"? <lena@kestrel\.example>/);
+    expect(sends[0].raw).toMatch(/Subject: (=\?UTF-8\?B\?[^?]+\?=|Axal VC Fund II, Lena)/);
+    expect(sends[0].threadId).toBeUndefined();
+    const lena = atob(sends[0].raw.split('Content-Transfer-Encoding: base64\r\n\r\n')[1].split('\r\n--')[0].replace(/\r\n/g, ''));
+    expect(lena).toContain('Following up on our call in May. We are raising Fund II.');
+    expect(lena).toContain('unsubscribe');
+
+    expect(await runDue(env, t0 + 2 * DAY)).toMatchObject({ sent: 0 });
+    expect(await runDue(env, t0 + 3 * DAY + 1000)).toMatchObject({ sent: 2 });
+    expect(sends[2].threadId).toBe('th1');
+    expect(sends[2].raw).toContain('In-Reply-To: <msg1@mail.gmail.com>');
+    expect(sends[2].raw).toMatch(/Subject: (Re: |=\?UTF-8)/);
+    const done = await get(s.id);
+    expect(done.status).toBe('completed');
+    expect(done.recipients.every(r => r.status === 'completed')).toBe(true);
+  });
+
+  it('stops a recipient who replied, bounced or asked to unsubscribe', async () => {
+    const s = await connectedApprovedStarted();
+    const t0 = Date.now() + 1000;
+    await runDue(env, t0);
+    threads.th1 = [{ id: 'r1', threadId: 'th1', internalDate: String(t0 + DAY), snippet: 'Please unsubscribe me', payload: { headers: [{ name: 'From', value: 'Lena <lena@kestrel.example>' }] } }];
+    threads.th2 = [{ id: 'r2', threadId: 'th2', internalDate: String(t0 + DAY), snippet: 'Happy to talk Tuesday', payload: { headers: [{ name: 'From', value: 'omar@harbor.example' }] } }];
+    expect(await runDue(env, t0 + 4 * DAY)).toMatchObject({ sent: 0, stopped: 2 });
+    const r = await get(s.id);
+    expect(Object.fromEntries(r.recipients.map(x => [x.email, x.status]))).toEqual({ 'lena@kestrel.example': 'opted_out', 'omar@harbor.example': 'replied' });
+    expect(await env.DB.prepare('SELECT email FROM opt_outs').first()).toEqual({ email: 'lena@kestrel.example' });
+  });
+
+  it('retries when Gmail is busy, but never resends a send whose outcome is unknown', async () => {
+    const s = await connectedApprovedStarted();
+    const t0 = Date.now() + 1000;
+    sendMode = ['500', 'throw'];
+    expect(await runDue(env, t0)).toMatchObject({ sent: 0, failed: 2 });
+    let r = await get(s.id);
+    const lena = r.recipients.find(x => x.email === 'lena@kestrel.example')!;
+    const omar = r.recipients.find(x => x.email === 'omar@harbor.example')!;
+    expect(lena).toMatchObject({ status: 'active', nextStep: 0 });
+    expect(lena.lastError).toContain('Will retry');
+    expect(omar.status).toBe('failed');
+    expect(omar.lastError).toContain('Check Sent mail');
+    expect(await runDue(env, t0 + 60_000)).toMatchObject({ sent: 1 });
+    r = await get(s.id);
+    expect(sends.map(x => x.raw.includes('lena@kestrel.example'))).toEqual([true]);
+  });
+
+  it('pauses the sequence when the sending grant is revoked', async () => {
+    const s = await connectedApprovedStarted();
+    clearSenderCache();
+    revokedGrant = true;
+    expect(await runDue(env, Date.now() + 1000)).toMatchObject({ paused: 1, sent: 0 });
+    const r = await get(s.id);
+    expect(r.status).toBe('paused');
+    expect(r.lastError).toContain('Connect sending again');
+  });
+
+  it('lets the owner stop one recipient and opt them out everywhere', async () => {
+    const s = await connectedApprovedStarted();
+    const lena = s.recipients.find(x => x.email === 'lena@kestrel.example')!;
+    expect((await post('/api/sequences/' + s.id + '/recipients/' + lena.id + '/stop', 'ada', { optOut: true })).status).toBe(404);
+    await post('/api/sequences/' + s.id + '/recipients/' + lena.id + '/stop', 'good', { optOut: true });
+    expect(await runDue(env, Date.now() + 1000)).toMatchObject({ sent: 1 });
+    expect(sends[0].raw).toContain('omar@harbor.example');
   });
 });

@@ -16,6 +16,8 @@ import { ROLE_LABEL, type AdminApi, type Role } from './admin/api';
 import { BugReportDialog } from './components/BugReportDialog';
 import { Analytics, type Deliverability } from './components/analytics/Analytics';
 import { Automations } from './components/automations/Automations';
+import { Sequences } from './components/automations/Sequences';
+import type { SequencesApi } from './lib/sequencesApi';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
@@ -41,6 +43,8 @@ interface Props {
   reportBug?: ReportBug | null;
   /** DNS sender-authentication check for the organization's domain (backend). */
   deliverability?: Deliverability | null;
+  /** Outreach sequences (backend). */
+  sequences?: SequencesApi | null;
 }
 
 interface ListState {
@@ -58,7 +62,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences }: Props) {
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -162,7 +166,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   /** Switch view; `select` opens a specific conversation instead of the first one. */
   const go = (v: View, select?: string) => {
     setNavOpen(false);
-    if (v === 'bulk' || v === 'admin' || v === 'members') setCompose(c => (c ? { ...c, minimized: true } : c));
+    if (v === 'bulk' || v === 'admin' || v === 'members' || v === 'sequences') setCompose(c => (c ? { ...c, minimized: true } : c));
     if (v !== 'search') setQuery('');
     autoSelect.current = !select;
     setSelId(select || null);
@@ -405,7 +409,8 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
               onOpen={id => go('inbox', id)} onGo={go}
               onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))} />
           )}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations'].includes(view) && (
+          {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

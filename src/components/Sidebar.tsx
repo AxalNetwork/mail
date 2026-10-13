@@ -2,12 +2,12 @@ import type { FolderCounts } from '../providers/types';
 
 export type View =
   | 'inbox' | 'starred' | 'snoozed' | 'sent' | 'drafts' | 'scheduled' | 'all' | 'search'
-  | 'bulk' | 'admin' | 'members'
+  | 'bulk' | 'admin' | 'members' | 'sequences'
   | 'shared' | 'internal' | 'contacts' | 'documents' | 'automations' | 'tasks' | 'analytics';
 
 export const VIEW_TITLES: Record<View, string> = {
   inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', all: 'All Mail',
-  search: 'Search', bulk: 'Bulk email', admin: 'Administration', members: 'Members & access', shared: 'Shared Inboxes', internal: 'Internal',
+  search: 'Search', bulk: 'Bulk email', admin: 'Administration', members: 'Members & access', sequences: 'Outreach sequences', shared: 'Shared Inboxes', internal: 'Internal',
   contacts: 'Contacts & Relationships', documents: 'Documents', automations: 'AI Automations', tasks: 'Tasks & Approvals', analytics: 'Analytics'
 };
 

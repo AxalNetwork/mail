@@ -19,6 +19,10 @@ export interface Env {
   ORG_DOMAIN: string;
   /** Secret. Service account key (JSON) with domain-wide delegation; enables shared mailboxes. */
   GOOGLE_SERVICE_ACCOUNT?: string;
+  /** Secret. OAuth client secret: exchanges "Connect sending" grants for refresh tokens. */
+  GOOGLE_CLIENT_SECRET?: string;
+  /** Secret. 32 random bytes, base64: encrypts stored sending grants. */
+  TOKEN_ENCRYPTION_KEY?: string;
   /** Secret. GitHub token that may create issues; enables in-app bug reports. */
   GITHUB_TOKEN?: string;
   /** owner/repo that bug reports go to (default AxalNetwork/mail). */
