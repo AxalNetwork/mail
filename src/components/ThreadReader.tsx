@@ -4,6 +4,7 @@ import { MessageBody } from './MessageBody';
 import { formatSize } from '../lib/format';
 import { InternalPanel } from './internal/InternalPanel';
 import { SnoozeMenu } from './SnoozeMenu';
+import { SaveAttachment } from './documents/SaveAttachment';
 import { formatUntil } from '../lib/snooze';
 import type { NotesStore } from '../providers/gmail/notes';
 
@@ -26,6 +27,15 @@ interface Props {
   internal?: { store: NotesStore; authorName: string; onChanged: () => void } | null;
   /** Assignment and team status, for a conversation in a shared mailbox. */
   shared?: React.ReactNode;
+  /** Saving attachments to Documents (Google Drive), when connected. */
+  documents?: {
+    categories: string[];
+    /** messageId|name of attachments already saved. */
+    saved: Set<string>;
+    busy: string | null;
+    onSave: (a: AttachmentRef, category: string) => void;
+    onOpen: () => void;
+  } | null;
 }
 
 export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
@@ -80,11 +90,17 @@ export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
             {m.attachments.length > 0 && (
               <div className="attachments">
                 {m.attachments.map((a, i) => (
-                  <button key={i} className="attachment" onClick={() => p.onDownload(a)} title={'Download ' + a.name}>
-                    <span className="ext-tag">{a.ext}</span>
-                    <span>{a.name}</span>
-                    <span className="size">{formatSize(a.size)}</span>
-                  </button>
+                  <span key={i} className="attachment-wrap">
+                    <button className="attachment" onClick={() => p.onDownload(a)} title={'Download ' + a.name}>
+                      <span className="ext-tag">{a.ext}</span>
+                      <span>{a.name}</span>
+                      <span className="size">{formatSize(a.size)}</span>
+                    </button>
+                    {p.documents && a.attachmentId && (
+                      <SaveAttachment name={a.name} categories={p.documents.categories} saved={p.documents.saved.has((a.messageId || '') + '|' + a.name)}
+                        busy={p.documents.busy === (a.messageId || '') + '|' + a.name} onSave={c => p.documents!.onSave(a, c)} onOpen={p.documents.onOpen} />
+                    )}
+                  </span>
                 ))}
               </div>
             )}

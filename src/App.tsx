@@ -22,6 +22,9 @@ import { HttpDismissals, type DismissalStore } from './lib/automationsApi';
 import { HttpContactsApi, type ContactsApi } from './lib/contactsApi';
 import { HttpSharedApi, type SharedApi } from './lib/sharedApi';
 import { HttpSnoozes, LocalSnoozes } from './lib/snooze';
+import { Documents, HttpDocuments } from './lib/documents';
+import { Drive } from './lib/drive';
+import { DriveAuth } from './providers/gmail/driveAuth';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -182,6 +185,13 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.sessionUrl]
   );
 
+  // Documents: the member's own Drive, asked for separately (scope drive.file) when they turn it on.
+  const documents = useMemo(() => {
+    if (mode !== 'gmail' || !auth || !config.sessionUrl || !config.googleClientId || !session) return null;
+    const driveAuth = new DriveAuth(config.googleClientId, () => auth.loginHint);
+    return new Documents(new Drive(driveAuth), new HttpDocuments(() => auth.token()), driveAuth, () => session.provider.account().then(a => a.email));
+  }, [mode, auth, config.sessionUrl, config.googleClientId, session]);
+
   const outreach = useMemo(
     () => (mode === 'gmail' && auth && config.sessionUrl
       ? async (from: number, to: number) => {
@@ -268,6 +278,7 @@ function Session({ config }: { config: AppConfig }) {
       onOpenShared={(m, id) => { setOpenThread(id); setShared(m); }}
       initialThread={openThread}
       outreach={outreach}
+      documents={documents}
       notes={session.notes || null}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => { setOpenThread(null); setShared(addr === own ? null : addr); } : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
