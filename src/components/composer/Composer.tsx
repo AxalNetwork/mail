@@ -40,6 +40,8 @@ interface Props {
   /** Documents in the member's Google Drive, to attach (when Drive is connected). */
   documents?: Documents | null;
   onOpenDocuments?: () => void;
+  /** Send this message for approval instead of sending it (Tasks & Approvals). */
+  onRequestApproval?: (msg: OutgoingMessage) => Promise<void>;
 }
 
 const FORMATS: { glyph: string; title: string; cmd: string; arg?: string; style?: CSSProperties }[] = [
@@ -225,6 +227,31 @@ export function Composer(p: Props) {
     if (!caps.demo && total > MAX_ATTACHMENT_BYTES) return setError('Attachments total ' + formatSize(total) + '. Gmail accepts up to about 18 MB of files per message.');
     if (checks().length) return setConfirm(true);
     doSend();
+  };
+
+  const [asking, setAsking] = useState(false);
+  const askApproval = async () => {
+    const x = latest.current;
+    const err = validateRecipients(x.to, x.cc, x.bcc);
+    if (err) return setError(err);
+    if (!x.subject.trim() && !getText()) return setError('The message is empty.');
+    if (x.attachments.length) return setError('Approval requests can’t carry attachments yet. Remove them, or send without approval.');
+    if (x.schedule) return setError('Clear the schedule first: an approved message is sent when it is approved.');
+    if (!p.onRequestApproval) return;
+    setAsking(true);
+    clearTimeout(timer.current);
+    await chain.current;
+    try {
+      await p.onRequestApproval(build(x));
+      // The request holds the content now; the draft would only be a second copy that could be sent unapproved.
+      closed.current = true;
+      if (draftId.current) { await provider.deleteDraft(draftId.current).catch(() => {}); p.onDraftsChanged(); }
+      p.onClosed();
+    } catch (e) {
+      setError('Not sent for approval: ' + errorText(e));
+    } finally {
+      setAsking(false);
+    }
   };
 
   const checks = () => sendChecks({
@@ -523,6 +550,11 @@ export function Composer(p: Props) {
             )}
           </div>
           {c.schedule && <button className="sched-text" title="Clear schedule" onClick={() => patch({ schedule: null })}>{c.schedule.when} ×</button>}
+          {p.onRequestApproval && !caps.demo && (
+            <button className="btn lg" title="An admin (or, in a shared inbox, a teammate who can send) reviews it first" disabled={sending || asking} onClick={askApproval}>
+              {asking ? 'Sending for approval…' : 'Ask for approval'}
+            </button>
+          )}
           <span className="sep" />
           <button className="btn ghost" title="Attach file" onClick={() => fileRef.current?.click()}>⎘ Attach</button>
           <input type="file" multiple ref={fileRef} style={{ display: 'none' }} onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />

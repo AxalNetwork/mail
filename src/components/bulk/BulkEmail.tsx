@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Account, Identity, OutgoingMessage } from '../../types';
 import type { MailProvider } from '../../providers/types';
 import type { Assistant } from '../../assistant/types';
+import type { ApprovalCampaign } from '../../lib/tasksApi';
 import type { View } from '../Sidebar';
 import {
   BULK_FIELDS, MAX_ROWS, MERGE_TOKENS, OPTOUT_LINE, PERSONAS, autoMap, bulkRows, mergeTpl, needsApproval, presentPersonas,
@@ -22,6 +23,8 @@ interface Props {
   assistant: Assistant;
   account: Account;
   identities: Identity[];
+  /** Sends held (Investor, LP) messages to the approval queue instead of Drafts. */
+  requestApproval?: (payload: ApprovalCampaign) => Promise<void>;
   onDone: (folder: View) => void;
 }
 
@@ -62,7 +65,7 @@ const STATUS: Record<BulkRow['status'], [string, string]> = {
 };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-export function BulkEmail({ provider, assistant, account, identities, onDone }: Props) {
+export function BulkEmail({ provider, assistant, account, identities, requestApproval, onDone }: Props) {
   const toast = useToast();
   const demo = provider.capabilities.demo;
   const initial = (): State => ({
@@ -157,6 +160,7 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
     const startedAt = Date.now();
     let sent = 0;
     let held = 0;
+    const queued: ApprovalCampaign['messages'] = [];
     cancel.current = false;
     setProgress({ done: 0, total: list.length, failed });
     for (let i = 0; i < list.length; i++) {
@@ -171,12 +175,26 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
       };
       const hold = needsApproval(r.persona);
       try {
-        if (hold) { await provider.saveDraft(msg); held++; } else { const res = await provider.send(msg); accepted.push({ email: r.email, threadId: res.threadId }); sent++; }
+        if (hold && requestApproval && !demo) { queued.push({ to: msg.to[0], persona: r.persona, subject: mg.subject, text: mg.body }); held++; }
+        else if (hold) { await provider.saveDraft(msg); held++; } else { const res = await provider.send(msg); accepted.push({ email: r.email, threadId: res.threadId }); sent++; }
       } catch (e) {
         failed.push(r.email + ': ' + errorText(e));
       }
       setProgress({ done: i + 1, total: list.length, failed: [...failed] });
       if (!hold && provider.capabilities.bulkSpacingMs && i < list.length - 1) await sleep(provider.capabilities.bulkSpacingMs);
+    }
+    let approvalFailed = '';
+    if (queued.length) {
+      // One request for all held messages: an approver sees exactly what will be sent, and approves it as a whole.
+      try { await requestApproval!({ identity: { id: identity.id, addr: identity.addr, name: identity.name }, optout: b.optout, messages: queued }); }
+      catch (e) {
+        approvalFailed = errorText(e);
+        // Nothing is lost: the held messages go to Drafts, as before.
+        for (const m of queued) {
+          await provider.saveDraft({ identity, to: [m.to], cc: [], bcc: [], subject: m.subject, attachments: [], priority: 'Normal',
+            html: assembleHtml(textToHtml(m.text), sigHtml, null, b.optout ? OPTOUT_LINE : undefined), text: assembleText(m.text, signatureText(account.profile), null, b.optout ? OPTOUT_LINE : undefined) }).catch(x => failed.push(m.to.email + ': ' + errorText(x)));
+        }
+      }
     }
     const stopped = cancel.current;
     setProgress(null);
@@ -184,7 +202,8 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
     if (!demo) saveCampaign({ id: 'c' + startedAt, at: startedAt, subject: inc.length ? (b.msgs[inc[0].persona]?.subject || '') : '', from: identity.addr, total: list.length, accepted, held, failed: failed.length, scheduled: !!sched, stopped });
     const parts = [
       demo ? sent + ' recorded in demo mode, not delivered' : plural(sent, 'email') + (sched ? ' scheduled' : ' sent'),
-      held ? held + (demo ? ' held for approval' : ' saved to Drafts for partner approval') : '',
+      held ? held + (demo ? ' held for approval' : queued.length && !approvalFailed ? ' sent for approval (Tasks & Approvals)' : ' saved to Drafts for partner approval') : '',
+      approvalFailed ? 'approval request failed: ' + approvalFailed : '',
       failed.length ? failed.length + ' failed' : '',
       stopped ? 'stopped early' : ''
     ].filter(Boolean);
@@ -453,7 +472,7 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
                       <b style={{ fontWeight: 600 }}>{p.key}</b>
                       <span className="mono">{inc.filter(r => r.persona === p.key).length}</span>
                       <span><span className={'pill ' + (p.approval ? 'danger' : 'ok')} style={{ border: 0, fontSize: 11.5, padding: '2px 9px' }}>
-                        {p.approval ? (demo ? 'Held for partner approval' : 'Saved as drafts for approval') : sched ? 'Scheduled · ' + sched.when : 'Send'}
+                        {p.approval ? (demo ? 'Held for partner approval' : requestApproval ? 'Sent to the approval queue' : 'Saved as drafts for approval') : sched ? 'Scheduled · ' + sched.when : 'Send'}
                       </span></span>
                     </div>
                   ))}
@@ -463,7 +482,7 @@ export function BulkEmail({ provider, assistant, account, identities, onDone }: 
               <div className="card summary">
                 <span className="mono-label">Summary</span>
                 <div className="big-num"><b>{sendable}</b><span className="muted">{sched ? 'emails scheduled for ' + sched.when : 'emails will be sent'}</span></div>
-                {heldCount > 0 && <div className="big-num held"><b>{heldCount}</b><span className="muted">{demo ? 'held for approval by Priya Natarajan' : 'saved to your Drafts for partner approval'}</span></div>}
+                {heldCount > 0 && <div className="big-num held"><b>{heldCount}</b><span className="muted">{demo ? 'held for approval by Priya Natarajan' : requestApproval ? 'sent to an admin for approval in Tasks & Approvals; you send them once approved' : 'saved to your Drafts for partner approval'}</span></div>}
                 {demo
                   ? <span className="notice warn">Demo mode: messages are recorded here and not delivered.</span>
                   : <span className="notice accent">These messages will be delivered from {identity.addr}.</span>}

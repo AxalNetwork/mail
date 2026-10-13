@@ -29,6 +29,10 @@ import { SharedBar, useSharedPresence } from './components/shared/SharedBar';
 import { SharedInboxes } from './components/shared/SharedInboxes';
 import { DocumentsPage } from './components/documents/DocumentsPage';
 import type { Documents } from './lib/documents';
+import type { Task, TaskInput, TasksApi } from './lib/tasksApi';
+import { toApprovalMessage } from './lib/approvalRun';
+import { TasksPage } from './components/tasks/TasksPage';
+import { CreateTaskDialog } from './components/tasks/CreateTaskDialog';
 import { DriveNotConnected } from './providers/gmail/driveAuth';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
@@ -75,6 +79,8 @@ interface Props {
   outreach?: OutreachLoader | null;
   /** Documents in Google Drive (backend + the member's Drive). */
   documents?: Documents | null;
+  /** Tasks & Approvals (backend). */
+  tasks?: TasksApi | null;
 }
 
 interface ListState {
@@ -94,7 +100,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach, documents }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach, documents, tasks }: Props) {
   const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
@@ -124,6 +130,33 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
     const t = setInterval(refreshInternal, 120_000);
     return () => clearInterval(t);
   }, [refreshInternal]);
+
+  // ----- tasks: notifications count, tasks linked to the open conversation, the create dialog -----
+  const superAdmin = role === 'super_admin';
+  const [tasksUnseen, setTasksUnseen] = useState(0);
+  const refreshTasks = useCallback(() => { tasks?.inbox().then(r => setTasksUnseen(r.unseen)).catch(() => {}); }, [tasks]);
+  useEffect(() => {
+    refreshTasks();
+    const t = setInterval(refreshTasks, 120_000);
+    return () => clearInterval(t);
+  }, [refreshTasks]);
+  const [taskDialog, setTaskDialog] = useState<{ thread?: Thread; initial?: Partial<TaskInput> } | null>(null);
+  const [threadTasks, setThreadTasks] = useState<Task[]>([]);
+  const [openTaskId, setOpenTaskId] = useState<number | undefined>();
+  const hereMailbox = boot ? (provider.mailbox || boot.account.email).toLowerCase() : '';
+  useEffect(() => {
+    setThreadTasks([]);
+    if (!tasks || !thread || !hereMailbox) return;
+    let live = true;
+    tasks.list({ thread: thread.id, mailbox: hereMailbox, status: '' }).then(l => live && setThreadTasks(l)).catch(() => {});
+    return () => { live = false; };
+  }, [tasks, thread, hereMailbox]);
+  const openTask = (id: number) => { setOpenTaskId(id); go('tasks'); };
+  // Outreach sequences keep their own approval; Tasks shows how many wait for an admin.
+  const pendingSequences = useCallback(async () => {
+    if (!sequences || (role !== 'admin' && role !== 'super_admin')) return null;
+    return (await sequences.list()).filter(x => x.status === 'draft' && (!x.mine || role === 'super_admin')).length;
+  }, [sequences, role]);
 
   // ----- shared mailbox: who is here, and the members to assign to -----
   const sharedMailbox = shared ? provider.mailbox : undefined;
@@ -447,7 +480,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
         onReportBug={reportBug ? () => setBugOpen(true) : undefined}
       />
       <div className="body">
-        <Sidebar view={view} counts={{ ...counts, internal: internalUnread }} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
+        <Sidebar view={view} counts={{ ...counts, internal: internalUnread, tasks: tasksUnseen }} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
           footer={demo ? 'Signed in with your Axal VC account' : (provider.mailbox ? 'Shared mailbox · ' + provider.mailbox : 'Connected to Gmail · ' + boot.account.email) + (role && role !== 'member' ? ' · ' + ROLE_LABEL[role] : '')} />
         <main className={'main' + (selId ? ' has-sel' : '')} onClick={() => navOpen && setNavOpen(false)}>
           {isList && (
@@ -475,6 +508,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 onUnsnooze={provider.unsnooze ? () => thread && act(() => provider.unsnooze!(thread.id), 'Back in the inbox') : undefined}
                 onDownload={download}
                 internal={notes ? { store: notes, authorName: boot.account.name, onChanged: refreshInternal } : null}
+                tasks={tasks ? { linked: threadTasks, onOpen: openTask, onCreate: superAdmin && thread ? () => setTaskDialog({ thread }) : undefined } : null}
                 documents={documents && docCategories && thread ? {
                   categories: docCategories, saved: docSaved, busy: docBusy, onOpen: () => go('documents'),
                   onSave: async (a, category) => {
@@ -505,7 +539,8 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                   onDraft={() => thread && openCompose({ replyTo: thread, ai: true })}
                   onFollowUp={() => {
                     if (demo) return toast('Follow-up task created for Monday');
-                    if (thread) act(() => provider.setStarred(thread.id, true), 'Starred to follow up', false);
+                    if (thread && tasks && superAdmin) setTaskDialog({ thread, initial: { title: 'Follow up: ' + (thread.subject || 'conversation') } });
+                    else if (thread) act(() => provider.setStarred(thread.id, true), 'Starred to follow up', false);
                   }}
                 />
               )}
@@ -513,6 +548,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           )}
           {view === 'bulk' && (
             <BulkEmail provider={provider} assistant={assistant} account={boot.account} identities={boot.identities}
+              requestApproval={tasks ? async payload => { await tasks.requestApproval({ kind: 'bulk_campaign', payload }); refreshTasks(); } : undefined}
               onDone={(folder) => { reload(); go(folder); }} />
           )}
           {view === 'admin' && <SignatureAdmin provider={provider} onProfileChanged={load} />}
@@ -525,6 +561,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           {view === 'automations' && (
             <Automations provider={provider} orgDomain={provider.orgDomain || boot.account.email.split('@')[1] || ''} assistant={assistant} dismissals={dismissalStore}
               onOpen={id => go('inbox', id)} onGo={go}
+              onCreateTask={tasks && superAdmin ? (id, title) => provider.getThread(id).then(t => setTaskDialog({ thread: t, initial: { title, createdVia: 'automation' } })).catch(e => toast({ text: errorText(e), error: true })) : undefined}
               onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))} />
           )}
           {view === 'internal' && (
@@ -555,8 +592,18 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
               else toast({ text: 'That email is in ' + m + '.', error: true });
             }} />
           )}
+          {view === 'tasks' && (
+            <TasksPage api={tasks || null} role={role || 'member'} provider={provider} profile={boot.account.profile} canSuggest={!!assistant.live}
+              initialTaskId={openTaskId}
+              pendingSequences={pendingSequences} onOpenSequences={() => go('sequences')} onSeen={refreshTasks}
+              onOpenSource={(m, id) => {
+                if (m === hereMailbox) go('inbox', id);
+                else if (onOpenShared) onOpenShared(m, id);
+                else toast({ text: 'That email is in ' + m + '.', error: true });
+              }} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents', 'tasks'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>
@@ -580,7 +627,25 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           onDraftsChanged={() => { refreshCounts(); if (view === 'drafts') setReloadTick(t => t + 1); }}
           onOpenDraft={id => openCompose({ draftId: id })}
           documents={documents} onOpenDocuments={() => go('documents')}
+          onRequestApproval={tasks ? async msg => {
+            const shared = !!provider.mailbox && provider.mailbox !== boot.account.email.toLowerCase();
+            await tasks.requestApproval({
+              kind: shared ? 'shared_reply' : 'email_draft', payload: toApprovalMessage(msg),
+              mailbox: shared ? provider.mailbox : undefined, sourceThreadId: msg.reply?.threadId
+            });
+            refreshTasks();
+            toast({ text: 'Sent for approval. You’ll see the decision in Tasks & Approvals.', action: 'Open', onAction: () => go('tasks') });
+          } : undefined}
         />
+      )}
+      {taskDialog && tasks && (
+        <CreateTaskDialog api={tasks} thread={taskDialog.thread} mailbox={hereMailbox} initial={taskDialog.initial}
+          canSuggest={!!assistant.live} userName={boot.account.name} onClose={() => setTaskDialog(null)}
+          onCreated={made => {
+            setTaskDialog(null);
+            if (taskDialog.thread && thread?.id === taskDialog.thread.id) setThreadTasks(l => [...made, ...l]);
+            toast({ text: made.length === 1 ? 'Task created: ' + made[0].title : made.length + ' tasks created', action: 'Open', onAction: () => openTask(made[0].id) });
+          }} />
       )}
     </div>
   );
