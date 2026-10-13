@@ -4,6 +4,7 @@ import { HttpError, errorResponse, json, readJson } from './http';
 import * as notes from './notes';
 import * as automations from './automations';
 import * as contacts from './contacts';
+import * as shared from './shared';
 import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
@@ -100,6 +101,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
+  if (path === '/api/shared' || path.startsWith('/api/shared/')) return shared.route(req, env, user, url);
   if (path === '/api/mailboxes' && method === 'GET') return mailboxes.listForUser(env, user);
   if (path.startsWith('/api/mailboxes/')) return mailboxes.proxy(req, env, user, url);
   if (path === '/api/admin/mailboxes') return mailboxes.adminRoute(req, env, user, url);

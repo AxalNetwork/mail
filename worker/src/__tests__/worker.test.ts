@@ -7,12 +7,14 @@ import { clearAuthCache } from '../auth';
 import { clearDelegationCache } from '../delegation';
 import { clearSenderCache } from '../senders';
 import { runDue } from '../sequences';
+import { clearSharedCache } from '../shared';
+import { fromHeader } from '../mailboxes';
 import type { Env } from '../env';
 
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -42,6 +44,7 @@ let githubStatus: number[];
 let sends: { raw: string; threadId?: string; auth: string | null }[];
 let sendMode: string[];
 let threads: Record<string, unknown[]>;
+let sharedThreads: Record<string, { id: string; labelIds?: string[] }[]>;
 let revokedGrant: boolean;
 
 function mockFetch(tokens: Record<string, Record<string, unknown>>) {
@@ -90,7 +93,15 @@ function mockFetch(tokens: Record<string, Record<string, unknown>>) {
     if (url.hostname === 'oauth2.googleapis.com' && url.pathname === '/revoke') return new Response('', { status: 200 });
     if (url.hostname === 'gmail.googleapis.com') {
       gmailCalls.push({ url: url.pathname + url.search, method: req.method, auth: req.headers.get('Authorization'), body: req.method === 'GET' ? '' : await req.text() });
-      if (url.pathname.endsWith('/profile')) return Response.json({ emailAddress: (req.headers.get('Authorization') || '').replace('Bearer dwd:', '') });
+      const who = (req.headers.get('Authorization') || '').replace('Bearer dwd:', '');
+      if (url.pathname.endsWith('/profile')) return Response.json({ emailAddress: who });
+      if (url.pathname.endsWith('/settings/sendAs')) {
+        return Response.json({ sendAs: [{ sendAsEmail: who, isPrimary: true, displayName: 'Deals' }, { sendAsEmail: 'team@axal.vc', verificationStatus: 'accepted' }, { sendAsEmail: 'unverified@axal.vc', verificationStatus: 'pending' }] });
+      }
+      const sharedThread = /\/threads\/(s[\w-]+)$/.exec(url.pathname);
+      if (sharedThread) return Response.json({ id: sharedThread[1], messages: sharedThreads[sharedThread[1]] || [] });
+      if (url.pathname.endsWith('/drafts/d1')) return Response.json({ id: 'd1', message: { threadId: 's1', payload: { headers: [{ name: 'From', value: 'Julian <julian.personal@gmail.com>' }] } } });
+      if (url.pathname.endsWith('/messages/send') || url.pathname.endsWith('/drafts/send')) return Response.json({ id: 'sent1', threadId: 's1' });
       return Response.json({ ok: true });
     }
     if (url.hostname === 'cloudflare-dns.com') {
@@ -125,7 +136,7 @@ const good = { aud: 'client-1', email: 'julian@axal.vc', email_verified: 'true',
 function call(path: string, init: RequestInit & { token?: string } = {}) {
   const headers = new Headers(init.headers);
   if (init.token) headers.set('Authorization', 'Bearer ' + init.token);
-  if (init.body) headers.set('Content-Type', 'application/json');
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   return worker.fetch(new Request(ORIGIN + path, { ...init, headers }), env);
 }
 
@@ -158,6 +169,8 @@ beforeEach(() => {
   sends = [];
   sendMode = [];
   threads = {};
+  sharedThreads = {};
+  clearSharedCache();
   revokedGrant = false;
   clearSenderCache();
   env = {
@@ -411,16 +424,23 @@ describe('members administration', () => {
   });
 });
 
+/** The client's multipart/related upload: metadata, then the RFC 822 message. */
+function upload(meta: Record<string, unknown>, from: string, extra = '') {
+  return '--b\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) + '\r\n' +
+    '--b\r\nContent-Type: message/rfc822\r\n\r\nFrom: ' + from + '\r\nTo: lp@fund.example\r\nSubject: Re: Fund II\r\n' + extra + '\r\nHello' + '\r\n--b--';
+}
+
 describe('shared mailboxes', () => {
   it('reports when delegation is not set up', async () => {
     expect(await (await call('/api/mailboxes', { token: 'good' })).json()).toEqual({ enabled: false, mailboxes: [] });
+    expect(await (await call('/api/shared', { token: 'good' })).json()).toEqual({ enabled: false, you: 'julian@axal.vc', mailboxes: [] });
     expect((await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' })).status).toBe(503);
   });
 
   it('opens a granted mailbox through the proxy with a delegated token', async () => {
     env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
     const g = await post('/api/admin/mailboxes', 'boss', { mailbox: 'Deals@axal.vc', memberEmail: 'julian@axal.vc' });
-    expect(await g.json()).toEqual({ enabled: true, refreshTokenMailbox: null, mailboxes: [{ mailbox: 'deals@axal.vc', members: ['julian@axal.vc'] }] });
+    expect(await g.json()).toEqual({ enabled: true, refreshTokenMailbox: null, mailboxes: [{ mailbox: 'deals@axal.vc', members: ['julian@axal.vc'], readOnly: [] }] });
     expect(gmailCalls[0]).toMatchObject({ url: '/gmail/v1/users/me/profile', auth: 'Bearer dwd:deals@axal.vc' });
 
     expect(await (await call('/api/mailboxes', { token: 'good' })).json()).toEqual({ enabled: true, mailboxes: ['deals@axal.vc'] });
@@ -430,10 +450,11 @@ describe('shared mailboxes', () => {
     expect(list.status).toBe(200);
     expect(gmailCalls.at(-1)).toMatchObject({ url: '/gmail/v1/users/me/threads?labelIds=INBOX', method: 'GET', auth: 'Bearer dwd:deals@axal.vc' });
 
+    const body = upload({}, 'Deals <deals@axal.vc>');
     const send = await call('/api/mailboxes/deals%40axal.vc/upload/gmail/v1/users/me/messages/send?uploadType=multipart',
-      { method: 'POST', token: 'good', headers: { Origin: ORIGIN, 'Content-Type': 'multipart/related; boundary=b' }, body: '--b--' });
+      { method: 'POST', token: 'good', headers: { Origin: ORIGIN, 'Content-Type': 'multipart/related; boundary=b' }, body });
     expect(send.status).toBe(200);
-    expect(gmailCalls.at(-1)).toMatchObject({ url: '/upload/gmail/v1/users/me/messages/send?uploadType=multipart', method: 'POST', body: '--b--' });
+    expect(gmailCalls.at(-1)).toMatchObject({ url: '/upload/gmail/v1/users/me/messages/send?uploadType=multipart', method: 'POST', body });
   });
 
   it('refuses members without access and operations outside the mail client', async () => {
@@ -890,5 +911,136 @@ describe('contacts & relationships', () => {
     expect(prompt).toContain('Prefers mornings.');
     expect(prompt).toContain('‹/conversation›');
     expect(prompt).toContain('meeting');
+  });
+});
+
+describe('shared inboxes', () => {
+  const base = '/api/shared/deals%40axal.vc/threads';
+  const patch = (path: string, token: string, body: unknown) => call(path, { method: 'PATCH', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+  const send = (token: string, body: string, headers: Record<string, string> = {}) =>
+    call('/api/mailboxes/deals%40axal.vc/upload/gmail/v1/users/me/messages/send?uploadType=multipart',
+      { method: 'POST', token, headers: { Origin: ORIGIN, 'Content-Type': 'multipart/related; boundary=b', ...headers }, body });
+  const db = () => env.DB as unknown as { exec: (s: string) => void };
+  const setup = async () => {
+    env.GOOGLE_SERVICE_ACCOUNT = serviceAccountJson;
+    db().exec(`INSERT INTO members (email, name, status, role, created_at) VALUES ('julian@axal.vc', 'Julian Park', 'active', 'member', 0), ('priya@axal.vc', 'Priya', 'active', 'member', 0), ('ada@axal.vc', 'Ada', 'active', 'member', 0)`);
+    await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'julian@axal.vc' });
+    await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'priya@axal.vc' });
+    await post('/api/admin/mailboxes', 'boss', { mailbox: 'ir@axal.vc', memberEmail: 'ada@axal.vc' });
+  };
+  type S = { status: string; assignee: string | null; version: number; presence: { email: string; state: string }[]; lastReplyBy: string | null };
+
+  it('lists the member’s mailboxes with connection, members, permissions and send-as identities', async () => {
+    await setup();
+    await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'priya@axal.vc', canSend: false });
+    const r = await (await call('/api/shared', { token: 'good' })).json() as { mailboxes: Record<string, unknown>[] };
+    expect(r.mailboxes).toEqual([{
+      mailbox: 'deals@axal.vc', connection: expect.objectContaining({ ok: true, via: 'delegation', error: null }), sync: 'live',
+      members: [{ email: 'julian@axal.vc', name: 'Julian Park', canSend: true }, { email: 'priya@axal.vc', name: 'Priya', canSend: false }],
+      me: { canSend: true },
+      sendAs: [{ email: 'deals@axal.vc', name: 'Deals', primary: true }, { email: 'team@axal.vc', name: '', primary: false }]
+    }]);
+    expect((await (await call('/api/shared', { token: 'ada' })).json() as { mailboxes: { mailbox: string }[] }).mailboxes.map(m => m.mailbox)).toEqual(['ir@axal.vc']);
+    expect(await (await call('/api/admin/mailboxes', { token: 'boss' })).json()).toMatchObject({ mailboxes: [{ mailbox: 'deals@axal.vc', readOnly: ['priya@axal.vc'] }, { mailbox: 'ir@axal.vc', readOnly: [] }] });
+  });
+
+  it('claims, reassigns and releases with a version check, and logs who did what', async () => {
+    await setup();
+    expect(await (await call(base + '?ids=s1,s2', { token: 'good' })).json()).toMatchObject({ states: { s1: { status: 'open', assignee: null, version: 0 }, s2: { version: 0 } } });
+    const c = await patch(base + '/s1', 'good', { expectedVersion: 0, assignee: 'julian@axal.vc' });
+    expect(c.status).toBe(200);
+    expect((await c.json() as { state: S }).state).toMatchObject({ assignee: 'julian@axal.vc', version: 1 });
+    // Priya acts on what she saw before Julian's claim: refused, with the current state.
+    const stale = await patch(base + '/s1', 'priya', { expectedVersion: 0, assignee: 'priya@axal.vc' });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: 'conflict', current: { assignee: 'julian@axal.vc', version: 1 } });
+    expect((await patch(base + '/s1', 'priya', { expectedVersion: 1, assignee: 'ada@axal.vc' })).status).toBe(400); // Ada can't open deals@
+    expect((await patch(base + '/s1', 'priya', { expectedVersion: 1, assignee: 'priya@axal.vc', status: 'pending' })).status).toBe(200);
+    expect((await patch(base + '/s1', 'priya', { expectedVersion: 2, assignee: null })).status).toBe(200);
+    expect((await patch(base + '/s1', 'priya', { expectedVersion: 3, status: 'done' })).status).toBe(400);
+    const a = await (await call(base + '/s1/activity', { token: 'good' })).json() as { activity: { actor: string; action: string; detail: string }[] };
+    expect(a.activity.map(x => [x.actor, x.action, x.detail])).toEqual([
+      ['priya@axal.vc', 'released', 'priya@axal.vc'],
+      ['priya@axal.vc', 'status', 'pending'],
+      ['priya@axal.vc', 'assigned', 'priya@axal.vc'],
+      ['julian@axal.vc', 'claimed', 'julian@axal.vc']
+    ]);
+    expect((await (await call(base + '?status=pending', { token: 'good' })).json() as { states: S[] }).states).toHaveLength(1);
+    expect((await (await call(base + '?assignee=none', { token: 'good' })).json() as { states: S[] }).states).toHaveLength(1);
+  });
+
+  it('keeps each mailbox’s conversations to its own members', async () => {
+    await setup();
+    await patch(base + '/s1', 'good', { expectedVersion: 0, status: 'pending' });
+    for (const [path, init] of [[base + '?ids=s1', {}], [base + '/s1', {}], [base + '/s1/activity', {}]] as const) expect((await call(path, { token: 'ada', ...init })).status).toBe(403);
+    expect((await patch(base + '/s1', 'ada', { expectedVersion: 1, status: 'resolved' })).status).toBe(403);
+    expect((await post(base + '/s1/presence', 'ada', { state: 'viewing' })).status).toBe(403);
+    // The same thread id in another mailbox is another conversation.
+    expect(await (await call('/api/shared/ir%40axal.vc/threads?ids=s1', { token: 'ada' })).json()).toMatchObject({ states: { s1: { status: 'open', version: 0 } } });
+    expect((await call('/api/shared/ir%40axal.vc/threads?ids=s1', { token: 'good' })).status).toBe(403);
+  });
+
+  it('shows who else is viewing or replying, for two minutes', async () => {
+    await setup();
+    await post(base + '/s1/presence', 'priya', { state: 'replying' });
+    await post(base + '/s1/presence', 'good', { state: 'viewing' });
+    const s = (await (await call(base + '?ids=s1', { token: 'good' })).json() as { states: Record<string, S> }).states.s1;
+    expect(s.presence).toEqual([{ email: 'priya@axal.vc', state: 'replying' }]);
+    db().exec(`UPDATE shared_presence SET updated_at = 0 WHERE member_email = 'priya@axal.vc'`);
+    expect((await (await call(base + '?ids=s1', { token: 'good' })).json() as { states: Record<string, S> }).states.s1.presence).toEqual([]);
+  });
+
+  it('sends only with send permission and a send-as address Gmail allows', async () => {
+    await setup();
+    await post('/api/admin/mailboxes', 'boss', { mailbox: 'deals@axal.vc', memberEmail: 'priya@axal.vc', canSend: false });
+    const n = gmailCalls.filter(c => c.url.includes('/messages/send')).length;
+    const ro = await send('priya', upload({ threadId: 's1' }, 'deals@axal.vc'));
+    expect(ro.status).toBe(403);
+    expect(await ro.json()).toMatchObject({ code: 'send_not_permitted' });
+    const personal = await send('good', upload({ threadId: 's1' }, 'Julian <julian@axal.vc>'));
+    expect(personal.status).toBe(403);
+    expect(await personal.json()).toMatchObject({ code: 'send_as_not_allowed' });
+    expect((await send('good', upload({}, 'unverified@axal.vc'))).status).toBe(403);
+    // A draft is checked by its stored From header.
+    const draft = await call('/api/mailboxes/deals%40axal.vc/gmail/v1/users/me/drafts/send', { method: 'POST', token: 'good', headers: { Origin: ORIGIN }, body: JSON.stringify({ id: 'd1' }) });
+    expect(draft.status).toBe(403);
+    expect(gmailCalls.filter(c => c.url.includes('/messages/send') || c.url.endsWith('/drafts/send')).length).toBe(n);
+
+    expect((await send('good', upload({ threadId: 's1' }, '"Axal Team" <team@axal.vc>'))).status).toBe(200);
+    const a = await (await call(base + '/s1/activity', { token: 'good' })).json() as { activity: { action: string; detail: string; actor: string }[] };
+    expect(a.activity.map(x => [x.actor, x.action, x.detail])).toEqual([
+      ['julian@axal.vc', 'replied', 'team@axal.vc'],
+      ['julian@axal.vc', 'send_refused', 'from julian.personal@gmail.com'],
+      ['julian@axal.vc', 'send_refused', 'from julian@axal.vc'],
+      ['priya@axal.vc', 'send_refused', 'no send permission']
+    ]); // the unverified attempt had no thread, so it is logged apart
+    expect((await (await call(base + '?ids=s1', { token: 'good' })).json() as { states: Record<string, S> }).states.s1.lastReplyBy).toBe('julian@axal.vc');
+  });
+
+  it('stops a duplicate reply or a reply to someone else’s conversation unless confirmed', async () => {
+    await setup();
+    sharedThreads.s1 = [{ id: 'm1', labelIds: ['INBOX'] }];
+    // Priya replies first, from the thread she saw.
+    expect((await send('priya', upload({ threadId: 's1' }, 'deals@axal.vc'), { 'X-Axal-Seen-Message': 'm1' })).status).toBe(200);
+    sharedThreads.s1.push({ id: 'm2', labelIds: ['SENT'] });
+    // Julian's composer was opened on m1 too.
+    const dup = await send('good', upload({ threadId: 's1' }, 'deals@axal.vc'), { 'X-Axal-Seen-Message': 'm1' });
+    expect(dup.status).toBe(409);
+    expect(await dup.json()).toMatchObject({ code: 'reply_conflict', error: expect.stringContaining('priya@axal.vc already replied from deals@axal.vc') });
+    // A newer incoming message is not a duplicate.
+    expect((await send('good', upload({ threadId: 's1' }, 'deals@axal.vc'), { 'X-Axal-Seen-Message': 'm2' })).status).toBe(200);
+
+    await patch(base + '/s1', 'priya', { expectedVersion: 1, assignee: 'priya@axal.vc' });
+    const theirs = await send('good', upload({ threadId: 's1' }, 'deals@axal.vc'), { 'X-Axal-Seen-Message': 'm2' });
+    expect(theirs.status).toBe(409);
+    expect((await theirs.json() as { error: string }).error).toContain('assigned to priya@axal.vc');
+    expect((await send('good', upload({ threadId: 's1' }, 'deals@axal.vc'), { 'X-Axal-Seen-Message': 'm2', 'X-Axal-Confirm': '1' })).status).toBe(200);
+  });
+
+  it('reads From addresses the way mail clients write them', () => {
+    expect(fromHeader('From: "Deals, Axal" <Deals@Axal.vc>\r\nTo: x@y.z\r\n\r\nbody From: evil@x.y')).toBe('deals@axal.vc');
+    expect(fromHeader('Subject: x\r\nFrom: =?UTF-8?B?w4l0w6k=?=\r\n <team@axal.vc>\r\n\r\n')).toBe('team@axal.vc');
+    expect(fromHeader('From: team@axal.vc\r\n\r\n')).toBe('team@axal.vc');
+    expect(fromHeader('To: a@b.c\r\n\r\nFrom: team@axal.vc')).toBe('');
   });
 });

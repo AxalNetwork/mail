@@ -20,6 +20,7 @@ import { HttpSequencesApi, SENDER_SCOPES, type SequencesApi } from './lib/sequen
 import { requestOfflineCode } from './providers/gmail/auth';
 import { HttpDismissals, type DismissalStore } from './lib/automationsApi';
 import { HttpContactsApi, type ContactsApi } from './lib/contactsApi';
+import { HttpSharedApi, type SharedApi } from './lib/sharedApi';
 
 type Mode = 'login' | 'demo' | 'gmail';
 
@@ -95,6 +96,8 @@ function Session({ config }: { config: AppConfig }) {
   const [role, setRole] = useState<Role | null>(null);
   /** Shared mailbox being shown; null = the user's own. */
   const [shared, setShared] = useState<string | null>(null);
+  /** Conversation to open after switching to a shared mailbox from Shared Inboxes. */
+  const [openThread, setOpenThread] = useState<string | null>(null);
 
   useEffect(() => {
     if (!auth) return;
@@ -164,6 +167,11 @@ function Session({ config }: { config: AppConfig }) {
 
   const dismissals = useMemo<DismissalStore | null>(
     () => (mode === 'gmail' && auth && config.sessionUrl ? new HttpDismissals(() => auth.token()) : null),
+    [mode, auth, config.sessionUrl]
+  );
+
+  const sharedApi = useMemo<SharedApi | null>(
+    () => (mode === 'gmail' && auth && config.sessionUrl ? new HttpSharedApi(() => auth.token()) : null),
     [mode, auth, config.sessionUrl]
   );
 
@@ -241,8 +249,12 @@ function Session({ config }: { config: AppConfig }) {
       sequences={sequences}
       dismissals={dismissals}
       contacts={contacts}
+      shared={sharedApi}
+      providerFor={auth ? m => gmailSession(auth, config, m).provider : undefined}
+      onOpenShared={(m, id) => { setOpenThread(id); setShared(m); }}
+      initialThread={openThread}
       notes={session.notes || null}
-      onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
+      onSwitchMailbox={mode === 'gmail' ? (addr, own) => { setOpenThread(null); setShared(addr === own ? null : addr); } : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
       onSignOut={signOut}
     />

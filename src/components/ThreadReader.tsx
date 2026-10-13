@@ -20,6 +20,8 @@ interface Props {
   onDownload: (a: AttachmentRef) => void;
   /** Internal notes for real mailboxes (the demo shows its sample activity instead). */
   internal?: { store: NotesStore; authorName: string; onChanged: () => void } | null;
+  /** Assignment and team status, for a conversation in a shared mailbox. */
+  shared?: React.ReactNode;
 }
 
 export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
@@ -55,6 +57,7 @@ export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
         </div>
       </div>
       <div className="reader-body">
+        {p.shared}
         {t.messages.map(m => (
           <article key={m.id} className="card msg">
             <div className="msg-head">

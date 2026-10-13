@@ -175,13 +175,22 @@ export function MembersAdmin({ api: real, role, demo }: Props) {
             {grants.mailboxes.map(g => (
               <div key={g.mailbox} className="row-wrap" style={{ alignItems: 'center' }}>
                 <b style={{ fontWeight: 600, minWidth: 180 }}>{g.mailbox}</b>
-                {g.members.map(mem => (
+                {g.members.map(mem => {
+                  const ro = !!g.readOnly?.includes(mem);
+                  return (
                   <span key={mem} className="chip" style={{ fontSize: 12 }}>
                     {mem}
+                    <button className="tag" style={{ width: 'auto', padding: '0 6px', borderRadius: 999 }} disabled={busy}
+                      title={ro ? 'Can read and draft, not send. Click to allow sending.' : 'Can send as ' + g.mailbox + '. Click to make read-only.'}
+                      aria-label={(ro ? 'Allow ' + mem + ' to send from ' : 'Stop ' + mem + ' sending from ') + g.mailbox}
+                      onClick={() => run(async () => setGrants(await api.grantMailbox(g.mailbox, mem, ro)), ro ? mem + ' can now send from ' + g.mailbox : mem + ' can no longer send from ' + g.mailbox)}>
+                      {ro ? 'READ ONLY' : 'SENDS'}
+                    </button>
                     <button aria-label={'Remove ' + mem + ' from ' + g.mailbox} disabled={busy}
                       onClick={() => run(async () => setGrants(await api.revokeMailbox(g.mailbox, mem)), mem + ' removed from ' + g.mailbox)}>×</button>
                   </span>
-                ))}
+                  );
+                })}
               </div>
             ))}
             {grants.enabled && (

@@ -1,4 +1,5 @@
 import { GmailProvider } from '../GmailProvider';
+import { ApiError } from '../client';
 import type { GoogleAuth } from '../auth';
 import { toMessage, toSummary, type GmailMessage } from '../parse';
 import { base64Url } from '../../../lib/mime';
@@ -159,6 +160,34 @@ describe('GmailProvider', () => {
       .map(p => new TextDecoder().decode(Uint8Array.from(atob(p.split('\r\n--')[0].replace(/\r\n/g, '')), ch => ch.charCodeAt(0))));
     expect(parts.length).toBeGreaterThan(1);
     for (const p of [c.body as string, ...parts]) expect(p).not.toContain('Priya joins Thursday');
+  });
+
+  it('in a shared mailbox, tells the Worker what the reply was based on, and surfaces its refusals', async () => {
+    const shared = () => new GmailProvider(fakeAuth(), '', undefined, { mailbox: 'deals@axal.vc', proxyBase: 'https://mail.axal.vc/api/mailboxes' });
+    const deals = { ...identity, id: 'deals@axal.vc', addr: 'deals@axal.vc' };
+    let calls = mockFetch({ ...baseRoutes, 'POST /users/me/messages/send': () => ({ id: 'm9', threadId: 't1' }) });
+    await shared().send({ ...out, identity: deals, reply: { threadId: 't1', messageIdHeader: '<id1@x>', seenMessageId: 'm7' } });
+    let c = calls.find(x => x.url.pathname.endsWith('/messages/send'))!;
+    expect(c.headers['X-Axal-Seen-Message']).toBe('m7');
+    expect(c.headers['X-Axal-Confirm']).toBeUndefined();
+    expect(c.body).toMatch(/\r\nFrom: .*<deals@axal\.vc>\r\n/);
+    for (const p of [c.body as string]) expect(p).not.toContain('Priya joins Thursday'); // internal notes never travel in the email
+
+    calls = mockFetch({ ...baseRoutes, 'POST /users/me/messages/send': () => ({ id: 'm9', threadId: 't1' }) });
+    await shared().send({ ...out, identity: deals, reply: { threadId: 't1', seenMessageId: 'm7' }, confirmShared: true });
+    expect(calls.find(x => x.url.pathname.endsWith('/messages/send'))!.headers['X-Axal-Confirm']).toBe('1');
+
+    // The user's own mailbox sends none of this.
+    calls = mockFetch({ ...baseRoutes, 'POST /users/me/messages/send': () => ({ id: 'm9', threadId: 't1' }) });
+    await new GmailProvider(fakeAuth()).send({ ...out, reply: { threadId: 't1', seenMessageId: 'm7' }, confirmShared: true });
+    c = calls.find(x => x.url.pathname.endsWith('/messages/send'))!;
+    expect(c.headers['X-Axal-Seen-Message']).toBeUndefined();
+    expect(c.headers['X-Axal-Confirm']).toBeUndefined();
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'priya@axal.vc already replied from deals@axal.vc after you opened this conversation. Send anyway?', code: 'reply_conflict' }), { status: 409 })));
+    const e = await shared().send({ ...out, identity: deals, note: '', reply: { threadId: 't1', seenMessageId: 'm7' } }).catch(x => x);
+    expect(e).toBeInstanceOf(ApiError);
+    expect(e).toMatchObject({ status: 409, code: 'reply_conflict', message: 'priya@axal.vc already replied from deals@axal.vc after you opened this conversation. Send anyway?' });
   });
 
   it('finds a conversation in this mailbox by the Message-ID that keys its internal notes', async () => {

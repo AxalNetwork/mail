@@ -122,6 +122,20 @@ For a single mailbox, a refresh token is enough: put `GMAIL_REFRESH_TOKEN` and `
 
 The key can open any mailbox on the domain, so keep it only in the Worker secret, and rotate it (new key, update the secret, delete the old key) if it might have leaked.
 
+Each member's access is **Sends** or **Read only** (click the tag on their chip). Read-only members can read, label and draft, but the Worker refuses their sends.
+
+### Shared Inboxes (team workflow)
+
+**Workspace → Shared Inboxes** lists the shared mailboxes you can open. For each one it shows the connection (delegation or stored token, checked against Gmail), its members and their permission, your permission, and the addresses Gmail lets it send as. Conversations are read live from Gmail; nothing is copied, so there is no sync to fall behind. Open the conversations to filter them by team status and owner, claim or assign them, and open one in the mailbox view.
+
+- **Assignment:** claim, assign, reassign, release, and filter by owner or unassigned. The assignee must have access to the mailbox. Each change names the version it was made from: if someone changed the conversation first, nothing is written and you see their change (no silent overwrite).
+- **Team status:** Open, Pending, Resolved. These are Axal VC Mail states only: they never mark read, label or archive anything in Gmail, and archiving in Gmail doesn't change them.
+- **In the conversation:** a bar above the messages with the status, the assignee, who else has it open or is writing a reply (heartbeats, shown for two minutes), the latest reply from a teammate, and the history of assignments, status changes and replies. Internal notes and @mentions work as everywhere else and never go into an email.
+- **Sending:** the Worker checks every send as the mailbox before passing it to Gmail. The member needs send permission, and the From address must be one Gmail lets the mailbox send as (the address itself or a verified alias), or the send is refused and logged. Before a reply it also checks Gmail: if someone replied after you opened the conversation, or it is assigned to someone else, you are asked first. This is a check at send time, not a lock: two people can still write replies at once, but the second is warned before it goes out. The confirmation names which address the message went from.
+- **Audit:** assignments, status changes, replies (with the send-as address) and refused sends are logged with who and when, never message content (D1 `shared_activity`; migration `0010_shared_inboxes.sql`).
+
+Limitations: filters apply to the inbox page loaded on screen (more with *Load more*). Tasks will link once Tasks & Approvals (issue #2) exists. Production needs a service account key or refresh token on the Worker before any of this can be used.
+
 Members and linked accounts can also be edited directly in D1 (Cloudflare dashboard → D1 → axal-mail → Console) or with `wrangler d1 execute axal-mail --remote --command "…"`:
 
 ```sql
@@ -220,6 +234,9 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `POST /api/sequences/:id/approve\|start\|pause\|stop` · `…/recipients/:rid/stop` | Approve a version (admins), run controls, stop or opt out one person |
 | `GET /api/analytics/deliverability` | MX, SPF, DKIM and DMARC checks for the organization domain |
 | `GET /api/mailboxes` | Shared mailboxes this member may open |
+| `GET /api/shared` | Shared mailboxes with connection, members, permissions and send-as addresses |
+| `GET /api/shared/<mailbox>/threads?ids=…` · `?status=&assignee=` | Team status, assignee and presence for conversations |
+| `GET/PATCH /api/shared/<mailbox>/threads/:id` · `…/activity` · `POST …/presence` | One conversation with its history; assign or set status (`expectedVersion`, 409 on conflict); viewing/replying heartbeat |
 | `/api/mailboxes/<mailbox>/(upload/)gmail/v1/users/me/…` | Gmail API for a shared mailbox, limited to what the mail client uses |
 | `GET/POST /api/admin/members` · `POST/DELETE /api/admin/links` | Members, roles, status and linked accounts (admins) |
 | `GET/POST/DELETE /api/admin/mailboxes` | Who opens which shared mailbox (super admins) |
@@ -261,7 +278,7 @@ src/                      Frontend
   assistant/              Demo, offline and HTTP (backend) assistant implementations
   lib/                    Pure logic: CSV, bulk merge, send checks, MIME builder, signature HTML
   components/             LoginScreen, Header, Sidebar, ThreadList, ThreadReader, AssistantPanel,
-                          composer/, bulk/, admin/, analytics/, automations/, internal/, contacts/
+                          composer/, bulk/, admin/, analytics/, automations/, internal/, contacts/, shared/
   styles/app.css          Design tokens and component styles
 worker/                   Backend (Cloudflare Worker)
   src/index.ts            Router; non-/api paths are served from dist/ by Cloudflare
@@ -275,6 +292,7 @@ worker/                   Backend (Cloudflare Worker)
   src/assistant.ts        Claude calls and prompts
   src/notes.ts            Internal notes, comments, mentions and activity (D1)
   src/contacts.ts         Contacts, organizations, merges and recorded events, with visibility checks (D1)
+  src/shared.ts           Shared inbox assignment, status, presence, audit and send checks (D1)
   migrations/             D1 schema
 wrangler.jsonc            Worker, assets, custom domain, D1 binding
 public/_headers           Security headers for the static frontend

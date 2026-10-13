@@ -182,6 +182,8 @@ export interface ReplyContext {
   references?: string;
   /** Message-ID of the conversation's first message; keys shared internal notes. */
   rootId?: string;
+  /** Gmail id of the latest message when the reply was started: a shared mailbox refuses a duplicate reply after it. */
+  seenMessageId?: string;
 }
 
 /** Everything a provider needs to send or store a message. */
@@ -200,6 +202,8 @@ export interface OutgoingMessage {
   schedule?: Schedule | null;
   /** Internal note: stored for the team, never sent. */
   note?: string;
+  /** The sender confirmed a shared-mailbox warning (someone else replied, or it is assigned to someone else). */
+  confirmShared?: boolean;
 }
 
 export interface SavedDraft {
