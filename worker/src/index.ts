@@ -6,6 +6,7 @@ import * as automations from './automations';
 import * as contacts from './contacts';
 import * as shared from './shared';
 import * as snoozes from './snoozes';
+import * as documents from './documents';
 import { outreachStats } from './outreach';
 import * as assistant from './assistant';
 import * as admin from './admin';
@@ -108,6 +109,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
   if (path === '/api/snoozes') return snoozes.route(req, env, user, url);
+  if (path === '/api/documents' || path.startsWith('/api/documents/')) return documents.route(req, env, user, url);
   if (path === '/api/shared' || path.startsWith('/api/shared/')) return shared.route(req, env, user, url);
   if (path === '/api/mailboxes' && method === 'GET') return mailboxes.listForUser(env, user);
   if (path.startsWith('/api/mailboxes/')) return mailboxes.proxy(req, env, user, url);

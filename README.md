@@ -170,6 +170,21 @@ A record is **team** (every member sees and edits it) or **private** (only its c
 
 Limitations: email history covers the signed-in member's own mailbox and the last 90 days (up to 500 conversations), not teammates' mailboxes or shared inboxes. Internal notes stay on their conversations rather than being copied to records, and tasks will be linked once Tasks & Approvals (issue #2) exists.
 
+## Documents (Google Drive)
+
+**Workspace → Documents** keeps files in **Google Drive**: each member's own Drive, in a folder called **Axal VC Mail** with a sub-folder per category (Fund Materials, Investor Presentations, Pitch Decks, Due Diligence, Investment Memoranda, Term Sheets, Legal Documents, Portfolio Companies, General Documents; *New folder* adds more). Drive is where the files are and the authority on what exists; nothing is stored in R2 or as D1 blobs.
+
+- **Permission:** *Connect Google Drive* asks for `https://www.googleapis.com/auth/drive.file` only, in a separate consent from Gmail. With it, Axal VC Mail can see and change only the files and folders it created, never the rest of the member's Drive. The Drive token stays in the browser tab (like the Gmail one); the Worker never holds Google credentials for Drive. Only the Drive of the account signed in to the app is accepted. *Disconnect* revokes it; files stay in Drive.
+- **Folders** are tagged (`appProperties`) and found again before anything is created, so reconnecting or retrying never makes duplicates. Their ids are kept in D1 (`drive_settings`).
+- **Managing files:** upload into a folder, search by name, filter by folder and type, rename, move between folders, download, preview images and text here (PDFs and Office files open in Drive's own viewer; nothing is ever made public), and delete (to Drive's trash, after a confirmation). Each refresh lists what is in Drive now: files renamed or moved in Drive show their new name and folder, and files trashed or deleted there are listed apart as no longer in Drive.
+- **From email:** each attachment in the reader has *Save to Documents* (pick the folder). The attachment's bytes are uploaded to Drive; the document remembers the conversation it came from (*Open the conversation*), and the attachment shows *Saved ✓*. Saving the same attachment again returns the copy already saved, also after a retry. Nothing is saved automatically.
+- **AI extraction** (needs `ANTHROPIC_API_KEY`): *Analyze document* on a PDF or plain-text file (.txt, .csv, .md, up to 12 MB) reads it from Drive with the member's access, sends it to the Worker once, and asks Claude for the company, business model, market claims, revenue, funding requirement, other financial figures, investment terms, key risks and explicit dates. Results are split into *stated in the document* (with the quote and page), *calculated from stated figures* and *AI interpretations*, plus what the document doesn't state. For text files the Worker checks every quote against the text and downgrades any it can't find to an interpretation. The document is treated as untrusted (instructions inside it are ignored), the file stays in Drive, and the results are saved with the record.
+- **D1** (`documents`, `drive_settings`; migration `0012_documents.sql`) holds per member: the Drive file id, name, type, size, folder, category, the source email (mailbox, thread and message ids), timestamps, whether it went missing from Drive, and the extraction result. Never file contents. Every endpoint is the member's own records only.
+
+**Setup (Google Cloud, once):** in the project of the OAuth client, *APIs & Services → Library → Google Drive API → Enable*, and on the OAuth consent screen add the scope `.../auth/drive.file` (a non-sensitive scope; for an *Internal* app no verification is needed). No new secrets or Worker bindings are needed. Apply migration `0012_documents.sql`.
+
+Limitations: documents are per member (each in their own Drive); sharing a folder with the team is done in Drive, and a shared drive for firm documents would need a decision and another scope. Files put into the Axal VC Mail folder by hand in Drive aren't visible to the app (drive.file covers only files it created). There is no live sync: changes made in Drive appear on refresh. The composer's document picker still lists only the demo library.
+
 ## Snooze
 
 **Snooze** in the reader hides a conversation until later today, tomorrow morning, the weekend, next week, or a date and time you pick (your browser's time zone). Gmail's API has no snooze, so Axal VC Mail does it in two parts:
@@ -250,6 +265,9 @@ All endpoints except `config` and `health` need `Authorization: Bearer <Google a
 | `GET/POST /api/sequences` · `GET/PUT /api/sequences/:id` | Outreach sequences: list, create, read, edit (new version) |
 | `POST /api/sequences/:id/approve\|start\|pause\|stop` · `…/recipients/:rid/stop` | Approve a version (admins), run controls, stop or opt out one person |
 | `GET /api/analytics/deliverability` | MX, SPF, DKIM and DMARC checks for the organization domain |
+| `GET/PUT /api/documents/settings` | The member's Drive folder ids (the signed-in account's Drive only) |
+| `GET/POST /api/documents` · `GET /api/documents/by-key?key=` | The member's document records (`sourceMessageId` filter); record a file saved to Drive (idempotent per attachment) |
+| `GET/PATCH/DELETE /api/documents/:id` · `POST …/:id/analyze` | One record; rename, recategorize, mark missing; forget; AI extraction of a PDF or text file the browser read from Drive |
 | `GET/POST/DELETE /api/snoozes` | Snoozed conversations of a mailbox you own or can open, with wake-up times (`serverWakes`: the cron brings them back) |
 | `GET /api/analytics/outreach?from=&to=` | Sequence figures: created, awaiting approval, accepted by Gmail, failed, unconfirmed, replied, bounce notices, opt-outs (delivery: unknown) |
 | `GET /api/shared/<mailbox>/summary?from=&to=` | Shared mailbox workload by status and member (members of the mailbox only) |
@@ -298,7 +316,7 @@ src/                      Frontend
   assistant/              Demo, offline and HTTP (backend) assistant implementations
   lib/                    Pure logic: CSV, bulk merge, send checks, MIME builder, signature HTML
   components/             LoginScreen, Header, Sidebar, ThreadList, ThreadReader, AssistantPanel,
-                          composer/, bulk/, admin/, analytics/, automations/, internal/, contacts/, shared/
+                          composer/, bulk/, admin/, analytics/, automations/, internal/, contacts/, shared/, documents/
   styles/app.css          Design tokens and component styles
 worker/                   Backend (Cloudflare Worker)
   src/index.ts            Router; non-/api paths are served from dist/ by Cloudflare
@@ -314,6 +332,7 @@ worker/                   Backend (Cloudflare Worker)
   src/contacts.ts         Contacts, organizations, merges and recorded events, with visibility checks (D1)
   src/shared.ts           Shared inbox assignment, status, presence, audit and send checks (D1)
   src/snoozes.ts          Snooze times (D1) and the cron that brings conversations back
+  src/documents.ts        Document records and Drive folder settings (D1); AI extraction requests
   migrations/             D1 schema
 wrangler.jsonc            Worker, assets, custom domain, D1 binding
 public/_headers           Security headers for the static frontend

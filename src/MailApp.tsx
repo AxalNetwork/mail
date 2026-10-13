@@ -27,6 +27,9 @@ import type { ContactsApi } from './lib/contactsApi';
 import type { SharedApi } from './lib/sharedApi';
 import { SharedBar, useSharedPresence } from './components/shared/SharedBar';
 import { SharedInboxes } from './components/shared/SharedInboxes';
+import { DocumentsPage } from './components/documents/DocumentsPage';
+import type { Documents } from './lib/documents';
+import { DriveNotConnected } from './providers/gmail/driveAuth';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
@@ -70,6 +73,8 @@ interface Props {
   initialThread?: string | null;
   /** Outreach sequence figures for Analytics (backend). */
   outreach?: OutreachLoader | null;
+  /** Documents in Google Drive (backend + the member's Drive). */
+  documents?: Documents | null;
 }
 
 interface ListState {
@@ -89,7 +94,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach, documents }: Props) {
   const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
@@ -146,6 +151,25 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
     const t = setInterval(check, 60_000);
     return () => { live = false; clearInterval(t); };
   }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ----- documents: save attachments of the open conversation to Google Drive -----
+  const [docCategories, setDocCategories] = useState<string[] | null>(null);
+  const [docSaved, setDocSaved] = useState<Set<string>>(new Set());
+  const [docBusy, setDocBusy] = useState<string | null>(null);
+  useEffect(() => {
+    if (!documents?.connected) { setDocCategories(null); return; }
+    documents.settings().then(st => setDocCategories(st ? st.categories.map(c => c.name) : null)).catch(() => setDocCategories(null));
+  }, [documents, view]);
+  useEffect(() => {
+    setDocSaved(new Set());
+    if (!documents || !docCategories || !thread) return;
+    let live = true;
+    const ids = [...new Set(thread.messages.filter(m => m.attachments.length).map(m => m.id))];
+    Promise.all(ids.map(id => documents.savedFrom(id).catch(() => []))).then(lists => {
+      if (live) setDocSaved(new Set(lists.flat().map(r => r.source!.messageId + '|' + r.name)));
+    });
+    return () => { live = false; };
+  }, [documents, docCategories, thread]);
 
   const composerRef = useRef<ComposerHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -451,6 +475,25 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 onUnsnooze={provider.unsnooze ? () => thread && act(() => provider.unsnooze!(thread.id), 'Back in the inbox') : undefined}
                 onDownload={download}
                 internal={notes ? { store: notes, authorName: boot.account.name, onChanged: refreshInternal } : null}
+                documents={documents && docCategories && thread ? {
+                  categories: docCategories, saved: docSaved, busy: docBusy, onOpen: () => go('documents'),
+                  onSave: async (a, category) => {
+                    const key = (a.messageId || '') + '|' + a.name;
+                    setDocBusy(key);
+                    try {
+                      const r = await documents.saveAttachment({
+                        mailbox: (provider.mailbox || boot.account.email).toLowerCase(), threadId: thread.id, messageId: a.messageId || '', name: a.name, size: a.size, mime: a.mime,
+                        blob: () => provider.downloadAttachment(a.messageId || '', a.attachmentId || '', a.mime)
+                      }, category);
+                      setDocSaved(x => new Set([...x, key]));
+                      toast({ text: (r.existing ? 'Already in Documents: ' : 'Saved to ' + category + ' in Google Drive: ') + a.name, action: 'Open Documents', onAction: () => go('documents') });
+                    } catch (e) {
+                      toast(e instanceof DriveNotConnected
+                        ? { text: 'Connect Google Drive in Documents first.', error: true, action: 'Open Documents', onAction: () => go('documents') }
+                        : { text: 'Not saved: ' + errorText(e), error: true });
+                    } finally { setDocBusy(null); }
+                  }
+                } : null}
                 shared={shared && sharedMailbox && thread ? <SharedBar key={thread.id} api={shared} mailbox={sharedMailbox} threadId={thread.id} members={sharedMembers} /> : null}
               />
               {aiOpen && (
@@ -504,8 +547,16 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
             <SharedInboxes api={shared || null} providerFor={m => (m === provider.mailbox ? provider : providerFor!(m))}
               onOpen={(m, id) => (m === provider.mailbox ? go('inbox', id) : onOpenShared?.(m, id))} />
           )}
+          {view === 'documents' && (
+            <DocumentsPage docs={documents || null} onOpenSource={(m, id) => {
+              const here = (provider.mailbox || boot.account.email).toLowerCase();
+              if (m === here) go('inbox', id);
+              else if (onOpenShared) onOpenShared(m, id);
+              else toast({ text: 'That email is in ' + m + '.', error: true });
+            }} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

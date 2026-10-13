@@ -745,3 +745,8 @@ button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 
 .trow.outreach { grid-template-columns: minmax(0, 2fr) 110px 64px 76px 90px 64px 70px 90px; padding: 9px 14px; min-width: 760px; font-size: 12.5px; }
 .trow.team { grid-template-columns: minmax(0, 1.6fr) repeat(5, 80px); padding: 9px 14px; min-width: 600px; font-size: 12.5px; }
 .trow.mailboxes { grid-template-columns: minmax(0, 1.6fr) repeat(5, 90px); padding: 9px 14px; min-width: 620px; font-size: 12.5px; }
+
+/* Documents */
+.attachment-wrap { display: inline-flex; align-items: center; gap: 4px; }
+.trow.docs { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) 80px 80px 110px 70px; padding: 9px 14px; min-width: 700px; font-size: 13px; }
+.btn.disabled { opacity: .5; pointer-events: none; }
