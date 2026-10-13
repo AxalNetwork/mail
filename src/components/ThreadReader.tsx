@@ -2,6 +2,8 @@ import type { AttachmentRef, Thread } from '../types';
 import { Avatar } from './Avatar';
 import { MessageBody } from './MessageBody';
 import { formatSize } from '../lib/format';
+import { InternalPanel } from './internal/InternalPanel';
+import type { NotesStore } from '../providers/gmail/notes';
 
 interface Props {
   thread: Thread | null;
@@ -16,6 +18,8 @@ interface Props {
   onSnooze: () => void;
   onDelete: () => void;
   onDownload: (a: AttachmentRef) => void;
+  /** Internal notes for real mailboxes (the demo shows its sample activity instead). */
+  internal?: { store: NotesStore; authorName: string; onChanged: () => void } | null;
 }
 
 export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
@@ -91,6 +95,9 @@ export function ThreadReader({ thread: t, loading, error, ...p }: Props) {
               </div>
             ))}
           </div>
+        )}
+ {t.noteKey && p.internal && (
+          <InternalPanel store={p.internal.store} noteKey={t.noteKey} subject={t.subject} authorName={p.internal.authorName} onChanged={p.internal.onChanged} />
         )}
         {canReply && <button className="reply-stub" onClick={() => p.onReply()}>Reply to {firstName}…</button>}
       </div>

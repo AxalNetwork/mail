@@ -1,6 +1,6 @@
 import type { Capabilities, FolderCounts, ListPage, ListQuery, MailProvider } from '../types';
 import type {
-  Account, ActivityEvent, ConversationSample, ConvMessage, Category, ComposeAttachment, Contact, DraftContent, Identity, OutgoingMessage, Person,
+  Account, ConversationSample, ConvMessage, Category, ComposeAttachment, Contact, DraftContent, Identity, OutgoingMessage, Person,
   Priority, Profile, SavedDraft, SentResult, Thread, ThreadSummary
 } from '../../types';
 import { GoogleAuth } from './auth';
@@ -266,6 +266,14 @@ export class GmailProvider implements MailProvider {
     };
   }
 
+  /** The thread in this mailbox that contains a message with this Message-ID (the key of internal notes). */
+  async findThread(messageId: string): Promise<string | null> {
+    const r = await this.api.request<{ threads?: { id: string }[] }>(this.gmail + '/threads', {
+      query: { q: 'rfc822msgid:' + messageId.replace(/^<|>$/g, ''), maxResults: 1 }
+    });
+    return r.threads?.[0]?.id || null;
+  }
+
   async conversations(days: number, cap = 300): Promise<ConversationSample> {
     const a = await this.account();
     let mine = [a.email.toLowerCase(), ...(this.mailbox ? [this.mailbox] : [])];
@@ -325,14 +333,15 @@ export class GmailProvider implements MailProvider {
     const s = toSummary(t, { me: a.email, labelNames: this.labelNames, now });
     const messages = (t.messages || []).filter(m => !(m.labelIds || []).includes('DRAFT')).map(m => toMessage(m, now));
     const rootKey = messages[0]?.messageIdHeader;
-    const notes = rootKey ? await this.notes.list(rootKey).catch((): ActivityEvent[] => []) : [];
     const n = messages.length;
     const fromLine = s.outgoing ? 'Sent from ' + a.email : 'From ' + (s.email ? s.from.replace(/ \(\d+\)$/, '') + ' <' + s.email + '>' : s.from);
     return {
       ...s,
       noReply: /no-?reply|notifications?@/i.test(s.email),
       messages,
-      activity: notes,
+      // Internal notes load separately (the reader's Internal panel), keyed by noteKey.
+      activity: [],
+      noteKey: rootKey,
       linkText: fromLine + ' · ' + plural(n, 'message')
     };
   }
@@ -442,7 +451,7 @@ export class GmailProvider implements MailProvider {
     const text = msg.note?.trim();
     if (!text) return;
     const key = msg.reply?.rootId || msg.reply?.messageIdHeader || (await this.messageIdOf(sentId));
-    if (key) await this.notes.add(key, text, (await this.account()).name);
+    if (key) await this.notes.add(key, text, (await this.account()).name, { subject: msg.subject.replace(/^(re|fwd?):\s*/i, '') });
   }
 
   async saveDraft(msg: OutgoingMessage): Promise<SavedDraft> {

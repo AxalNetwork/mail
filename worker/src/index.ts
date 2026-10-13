@@ -1,7 +1,7 @@
 import type { Env } from './env';
 import { allowedDomains, authenticate } from './auth';
 import { HttpError, errorResponse, json, readJson } from './http';
-import { addNote, listNotes } from './notes';
+import * as notes from './notes';
 import * as assistant from './assistant';
 import * as admin from './admin';
 import * as mailboxes from './mailboxes';
@@ -72,9 +72,18 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/session' && method === 'GET') return json({ user });
 
   if (path === '/api/notes') {
-    if (method === 'GET') return json({ notes: await listNotes(env.DB, url.searchParams.get('key')) });
-    if (method === 'POST') return json({ note: await addNote(env.DB, user, await readJson(req)) }, 201);
+    if (method === 'GET') return json({ notes: await notes.listNotes(env, user, url.searchParams.get('key')) });
+    if (method === 'POST') return json({ note: await notes.addNote(env, user, await readJson(req)) }, 201);
   }
+  const noteId = /^\/api\/notes\/(\d+)$/.exec(path);
+  if (noteId) {
+    if (method === 'PATCH') return json({ note: await notes.editNote(env, user, Number(noteId[1]), await readJson(req)) });
+    if (method === 'DELETE') { await notes.deleteNote(env, user, Number(noteId[1])); return json({ ok: true }); }
+  }
+  if (path === '/api/notes/activity' && method === 'GET') return json({ activity: await notes.activity(env, url.searchParams.get('key')) });
+  if (path === '/api/internal' && method === 'GET') return json(await notes.inbox(env, user));
+  if (path === '/api/internal/read' && method === 'POST') { await notes.markRead(env, user, await readJson(req)); return json({ ok: true }); }
+  if (path === '/api/internal/members' && method === 'GET') return json({ members: await notes.mentionable(env) });
 
   if (path === '/api/sequences/sender') {
     if (method === 'GET') return json({ sender: await senderStatus(env, user) });

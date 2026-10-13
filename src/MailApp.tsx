@@ -18,6 +18,8 @@ import { Analytics, type Deliverability } from './components/analytics/Analytics
 import { Automations } from './components/automations/Automations';
 import { Sequences } from './components/automations/Sequences';
 import type { SequencesApi } from './lib/sequencesApi';
+import type { NotesStore } from './providers/gmail/notes';
+import { InternalPage } from './components/internal/InternalPage';
 import type { ReportBug } from './lib/diagnostics';
 import { errorText, useToast } from './components/Toast';
 import { escapeHtml, textToHtml } from './lib/html';
@@ -45,6 +47,8 @@ interface Props {
   deliverability?: Deliverability | null;
   /** Outreach sequences (backend). */
   sequences?: SequencesApi | null;
+  /** Internal notes and comments (backend, or this device). */
+  notes?: NotesStore | null;
 }
 
 interface ListState {
@@ -62,7 +66,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes }: Props) {
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -82,6 +86,15 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   const [navOpen, setNavOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   const [bugOpen, setBugOpen] = useState(false);
+  const [internalUnread, setInternalUnread] = useState(0);
+  const refreshInternal = useCallback(() => {
+    notes?.inbox?.().then(r => setInternalUnread(r.unread)).catch(() => {});
+  }, [notes]);
+  useEffect(() => {
+    refreshInternal();
+    const t = setInterval(refreshInternal, 120_000);
+    return () => clearInterval(t);
+  }, [refreshInternal]);
 
   const composerRef = useRef<ComposerHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -357,7 +370,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
         onReportBug={reportBug ? () => setBugOpen(true) : undefined}
       />
       <div className="body">
-        <Sidebar view={view} counts={counts} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
+        <Sidebar view={view} counts={{ ...counts, internal: internalUnread }} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
           footer={demo ? 'Signed in with your Axal VC account' : (provider.mailbox ? 'Shared mailbox · ' + provider.mailbox : 'Connected to Gmail · ' + boot.account.email) + (role && role !== 'member' ? ' · ' + ROLE_LABEL[role] : '')} />
         <main className={'main' + (selId ? ' has-sel' : '')} onClick={() => navOpen && setNavOpen(false)}>
           {isList && (
@@ -378,6 +391,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 onDelete={() => act(() => provider.trash(thread!.id), demo ? 'Deleted' : 'Moved to Trash')}
                 onSnooze={() => thread && provider.snooze(thread.id).then(until => { removeFromList(thread.id); toast('Snoozed until ' + until); refreshCounts(); }).catch(e => toast({ text: errorText(e), error: true }))}
                 onDownload={download}
+                internal={notes ? { store: notes, authorName: boot.account.name, onChanged: refreshInternal } : null}
               />
               {aiOpen && (
                 <AssistantPanel
@@ -409,8 +423,16 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
               onOpen={id => go('inbox', id)} onGo={go}
               onDraftReply={id => provider.getThread(id).then(t => openCompose({ replyTo: t, ai: true })).catch(e => toast({ text: errorText(e), error: true }))} />
           )}
+          {view === 'internal' && (
+            <InternalPage store={notes || null} onChanged={refreshInternal}
+              onOpen={async key => {
+                const id = await provider.findThread?.(key).catch(() => null);
+                if (id) go('inbox', id);
+                else toast({ text: 'That conversation isn’t in this mailbox. It may be in a teammate’s or a shared mailbox.', error: true });
+              }} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

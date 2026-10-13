@@ -13,7 +13,7 @@ export const VIEW_TITLES: Record<View, string> = {
 
 interface Props {
   view: View;
-  counts: FolderCounts;
+  counts: FolderCounts & { internal?: number };
   open: boolean;
   hide: Partial<Record<View, boolean>>;
   footer: string;
@@ -45,7 +45,7 @@ export function Sidebar({ view, counts, open, hide, footer, onGo, onCompose }: P
       <div className="nav-group">
         <span className="mono-label">Workspace</span>
         {item('shared')}
-        {item('internal')}
+        {item('internal', counts.internal)}
         {item('contacts')}
         {item('documents')}
         {item('automations')}

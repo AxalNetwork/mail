@@ -7,7 +7,7 @@ import { DemoProvider } from './providers/demo/DemoProvider';
 import { ORG_DOMAIN as DEMO_DOMAIN } from './providers/demo/data';
 import { GmailProvider } from './providers/gmail/GmailProvider';
 import { GoogleAuth } from './providers/gmail/auth';
-import { LocalNotes, RemoteNotes } from './providers/gmail/notes';
+import { LocalNotes, RemoteNotes, type NotesStore } from './providers/gmail/notes';
 import type { MailProvider } from './providers/types';
 import { DemoAssistant } from './assistant/demo';
 import { HttpAssistant } from './assistant/http';
@@ -24,6 +24,7 @@ type Mode = 'login' | 'demo' | 'gmail';
 interface Session {
   provider: MailProvider;
   assistant: Assistant;
+  notes?: NotesStore;
 }
 
 /** Shared mailboxes this member may open (backend), or none without one. */
@@ -44,7 +45,7 @@ function gmailSession(auth: GoogleAuth, config: AppConfig, mailbox: string | nul
   const assistant = config.assistantUrl
     ? new HttpAssistant(config.assistantUrl, () => auth.token().catch(() => null))
     : new OfflineAssistant();
-  return { provider, assistant };
+  return { provider, assistant, notes };
 }
 
 export function App() {
@@ -226,6 +227,7 @@ function Session({ config }: { config: AppConfig }) {
       reportBug={reportBug}
       deliverability={deliverability}
       sequences={sequences}
+      notes={session.notes || null}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => setShared(addr === own ? null : addr) : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}
       onSignOut={signOut}

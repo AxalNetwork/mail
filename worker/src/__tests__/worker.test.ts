@@ -12,7 +12,7 @@ import type { Env } from '../env';
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -252,6 +252,60 @@ describe('notes', () => {
     await call('/api/notes', { method: 'POST', token: 'good', body: JSON.stringify({ key: '<other@x>', text: 'elsewhere' }) });
     const list = await (await call('/api/notes?key=' + encodeURIComponent('<root@x>'), { token: 'good' })).json() as { notes: { text: string; author: string }[] };
     expect(list.notes).toEqual([expect.objectContaining({ text: 'Priya joins Thursday', author: 'Julian Park' })]);
+  });
+
+  const note = (token: string, body: Record<string, unknown>) => post('/api/notes', token, { key: '<root@x>', ...body });
+  const patch = (path: string, token: string, body: unknown) => call(path, { method: 'PATCH', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+  const del = (path: string, token: string) => call(path, { method: 'DELETE', token, headers: { Origin: ORIGIN } });
+  type N = { id: number; text: string; kind: string; mine: boolean; canEdit: boolean; canDelete: boolean; mentions: { email: string }[]; updatedAt: number | null };
+  const listOf = async (token: string) => ((await (await call('/api/notes?key=' + encodeURIComponent('<root@x>'), { token })).json()) as { notes: N[] }).notes;
+
+  it('lets authors edit, authors or admins delete, and keeps an activity log without note text', async () => {
+    (env.DB as unknown as { exec: (s: string) => void }).exec(`INSERT INTO members (email, name, status, role, created_at) VALUES ('ada@axal.vc', 'Ada', 'active', 'admin', 0), ('priya@axal.vc', 'Priya', 'active', 'member', 0)`);
+    const a = ((await (await note('good', { text: 'LP is keen on AI infra', subject: 'Fund II' })).json()) as { note: N }).note;
+    expect(a).toMatchObject({ kind: 'note', mine: true, canEdit: true, canDelete: true });
+    const b = ((await (await note('priya', { text: 'Agreed', kind: 'comment' })).json()) as { note: N }).note;
+    expect(b.kind).toBe('comment');
+    // Julian sees Priya's comment but can't edit or delete it.
+    expect((await listOf('good')).find(n => n.id === b.id)).toMatchObject({ mine: false, canEdit: false, canDelete: false });
+    expect((await patch('/api/notes/' + b.id, 'good', { text: 'hijack' })).status).toBe(403);
+    expect((await del('/api/notes/' + b.id, 'good')).status).toBe(403);
+    // The author edits; an admin may delete someone else's.
+    const edited = ((await (await patch('/api/notes/' + a.id, 'good', { text: 'LP keen on AI infra; follow up after Q3' })).json()) as { note: N }).note;
+    expect(edited.text).toContain('Q3');
+    expect(edited.updatedAt).toBeGreaterThan(0);
+    expect((await del('/api/notes/' + b.id, 'ada')).status).toBe(200);
+    expect((await listOf('good')).map(n => n.id)).toEqual([a.id]);
+    expect((await patch('/api/notes/' + b.id, 'priya', { text: 'back' })).status).toBe(404);
+    const act = ((await (await call('/api/notes/activity?key=' + encodeURIComponent('<root@x>'), { token: 'good' })).json()) as { activity: { action: string; actor: string }[] }).activity;
+    expect(act.map(x => x.action)).toEqual(['created', 'created', 'edited', 'deleted']);
+    expect(JSON.stringify(act)).not.toContain('AI infra');
+    const stored = await env.DB.prepare('SELECT text, deleted_at FROM notes WHERE id = ?1').bind(b.id).first<{ text: string; deleted_at: number }>();
+    expect(stored).toMatchObject({ text: '' });
+  });
+
+  it('records mentions of members only, and shows them in the mentioned person’s Internal inbox', async () => {
+    (env.DB as unknown as { exec: (s: string) => void }).exec(`INSERT INTO members (email, name, status, created_at) VALUES ('priya@axal.vc', 'Priya Natarajan', 'active', 0), ('gone@axal.vc', 'Gone', 'suspended', 0)`);
+    const members = ((await (await call('/api/internal/members', { token: 'good' })).json()) as { members: { email: string }[] }).members.map(m => m.email);
+    expect(members).toContain('priya@axal.vc');
+    expect(members).not.toContain('gone@axal.vc');
+    const n = ((await (await note('good', { text: '@Priya can you take this?', subject: 'Seed round', mentions: ['priya@axal.vc', 'eve@evil.example', 'julian@axal.vc'] })).json()) as { note: N }).note;
+    expect(n.mentions.map(m => m.email)).toEqual(['priya@axal.vc']);
+    const inbox = (await (await call('/api/internal', { token: 'priya' })).json()) as { unread: number; mentions: (N & { read: boolean; subject: string; key: string })[]; recent: N[] };
+    expect(inbox.unread).toBe(1);
+    expect(inbox.mentions[0]).toMatchObject({ id: n.id, read: false, subject: 'Seed round', key: '<root@x>' });
+    expect(inbox.recent.map(r => r.id)).toContain(n.id);
+    await post('/api/internal/read', 'priya', { ids: [n.id] });
+    expect(((await (await call('/api/internal', { token: 'priya' })).json()) as { unread: number }).unread).toBe(0);
+    // Julian's own inbox has no mention of himself.
+    expect(((await (await call('/api/internal', { token: 'good' })).json()) as { mentions: unknown[] }).mentions).toEqual([]);
+  });
+
+  it('keeps internal notes away from people who are not members', async () => {
+    await note('good', { text: 'confidential' });
+    expect((await call('/api/notes?key=' + encodeURIComponent('<root@x>'), { token: 'outsider' })).status).toBe(403);
+    expect((await call('/api/internal', { token: 'outsider' })).status).toBe(403);
+    expect((await call('/api/notes?key=' + encodeURIComponent('<root@x>'))).status).toBe(401);
   });
 
   it('validates input', async () => {
