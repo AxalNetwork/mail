@@ -24,6 +24,7 @@ import { HttpSharedApi, type SharedApi } from './lib/sharedApi';
 import { HttpSnoozes, LocalSnoozes } from './lib/snooze';
 import { Documents, httpExtractor } from './lib/documents';
 import { HttpTasksApi, type TasksApi } from './lib/tasksApi';
+import { HttpNewslettersApi, type NewslettersApi } from './lib/newslettersApi';
 import { Drive } from './lib/drive';
 import { DriveAuth } from './providers/gmail/driveAuth';
 
@@ -191,6 +192,11 @@ function Session({ config }: { config: AppConfig }) {
     [mode, auth, config.sessionUrl]
   );
 
+  const newslettersApi = useMemo<NewslettersApi | null>(
+    () => (mode === 'gmail' && auth && config.sessionUrl ? new HttpNewslettersApi(() => auth.token()) : null),
+    [mode, auth, config.sessionUrl]
+  );
+
   // Documents: the member's own Drive, asked for separately (scope drive.file) when they turn it on.
   const documents = useMemo(() => {
     if (mode !== 'gmail' || !auth || !config.sessionUrl || !config.googleClientId || !session) return null;
@@ -286,6 +292,7 @@ function Session({ config }: { config: AppConfig }) {
       outreach={outreach}
       documents={documents}
       tasks={tasksApi}
+      newsletters={newslettersApi}
       notes={session.notes || null}
       onSwitchMailbox={mode === 'gmail' ? (addr, own) => { setOpenThread(null); setShared(addr === own ? null : addr); } : undefined}
       signOutLabel={mode === 'gmail' ? 'Sign out' : auth ? 'Exit demo' : 'Sign out'}

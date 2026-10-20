@@ -251,6 +251,16 @@ To turn it on:
 2. GitHub → Settings → Secrets → Actions: `OAUTH_CLIENT_SECRET` (that secret) and `TOKEN_ENCRYPTION_KEY` (32 random bytes, base64: `openssl rand -base64 32`). The deploy copies them to the Worker as `GOOGLE_CLIENT_SECRET` and `TOKEN_ENCRYPTION_KEY`. Keep the key: losing it means everyone connects sending again.
 3. Apply migration `0006_sequences.sql` (`npm run db:migrate`).
 
+## Newsletters
+
+Workspace › Newsletters writes newsletters from the eight Axal VC templates (The Brief, Partner Letter, Portfolio Spotlight, Founder call, Event invitation, Event recap, Insights, Announcement), with a live preview (desktop, mobile, dark, images off, plain text).
+
+- **Who does what.** Any member drafts and asks for approval. Admins edit any newsletter, manage lists, subscribers and settings, send tests, and schedule. A list marked "Needs approval" (LPs & investors) is approved by an admin other than the one who asked or edited last (a super admin may approve their own), for that exact version: any edit afterwards needs approval again.
+- **Sending.** Nothing goes out automatically. After an admin schedules a newsletter, the Worker's cron (every 10 minutes) sends it in batches from that admin's "Connect sending" grant: one email per person, each person at most once, with `List-Unsubscribe` one-click headers. Gmail limits pause the rest until a later run. Opens and clicks aren't tracked.
+- **Subscribers.** People join from the website form (double opt-in by default), or an admin adds or imports them. Without attested consent, each person gets a confirmation email first. Unsubscribed people are never added back by an import, and deleting a person keeps only a hash of their address.
+- **Website.** Paste the snippet from Newsletters › Settings into axal.vc: `<div data-axal-newsletter></div><script src="https://mail.axal.vc/api/public/newsletter/embed.js" defer></script>`. Confirmation, unsubscribe and preferences pages live under `/api/public/newsletter/` (no sign-in, signed links).
+- **Setup (owner).** Apply migration `0014_newsletters.sql` (`npm run db:migrate`). Set the `NEWSLETTER_SIGNING_KEY` secret (at least 16 characters; falls back to `TOKEN_ENCRYPTION_KEY`), and optionally `APP_URL` if the app isn't at https://mail.axal.vc. Then in Settings, add the postal address and disclaimer, and a super admin sets themselves as the sender of confirmation emails (after Connect sending).
+
 ## Bug reports
 
 *Report a bug* in the account menu files a GitHub issue (label `bug`) through the Worker. The repository is public, so the form says so, the issue never names the reporter, and email addresses are removed from everything it sends. Who filed which issue is kept in D1 (`bug_reports`) for admins. The optional technical details are the screen, path, build, browser, window size and the last few app errors. Each member can file 5 reports an hour.

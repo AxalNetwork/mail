@@ -1267,7 +1267,7 @@ describe('tasks', () => {
     // Only a super admin creates tasks.
     expect((await post('/api/tasks', 'good', { title: 'Send the deck to Maya' })).status).toBe(403);
     expect((await post('/api/tasks', 'ada', { title: 'Send the deck to Maya' })).status).toBe(403);
-    const r = await post('/api/tasks', 'boss', { title: 'Send the deck to Maya', priority: 'high', dueAt: Date.UTC(2026, 9, 20), assignee: 'julian@axal.vc', sourceMailbox: 'boss@axal.vc', sourceThreadId: 't1', sourceSubject: 'Seed round' });
+    const r = await post('/api/tasks', 'boss', { title: 'Send the deck to Maya', priority: 'high', dueAt: Date.now() + 30 * 86_400_000, assignee: 'julian@axal.vc', sourceMailbox: 'boss@axal.vc', sourceThreadId: 't1', sourceSubject: 'Seed round' });
     expect(r.status).toBe(201);
     const t = await task(r);
     expect(t).toMatchObject({ assignee: 'julian@axal.vc', status: 'open', createdVia: 'manual', source: { threadId: 't1' } });
