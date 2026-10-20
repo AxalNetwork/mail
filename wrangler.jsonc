@@ -42,7 +42,9 @@
     // OAuth Web client for sign-in (public: every visitor's browser receives it)
     "GOOGLE_CLIENT_ID": "1073989004951-k2e595rrk1o2l38gb4c3lbdkn7egin0d.apps.googleusercontent.com",
     // Full rights in Administration, including granting admin; can't be suspended from the app
-    "SUPER_ADMINS": "guillaume.lauzier@axal.vc"
+    "SUPER_ADMINS": "guillaume.lauzier@axal.vc",
+    // StudioOS, for the Mail link (lists, testers and testing programmes)
+    "STUDIOOS_BASE_URL": "https://axal.vc"
   },
   // Secrets (wrangler secret put): ANTHROPIC_API_KEY
 

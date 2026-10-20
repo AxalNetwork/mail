@@ -36,7 +36,7 @@ export interface NlSettings {
 
 export interface LinkAudience { key: string; name: string; group: string; source: string; count: number; unsubscribed: number; bounced: number; requiresApproval: boolean }
 
-export type RecipientStatus = 'accepted' | 'failed' | 'unconfirmed' | 'skipped' | 'queued' | 'unsubscribed';
+export type RecipientStatus = 'accepted' | 'failed' | 'unconfirmed' | 'skipped' | 'queued' | 'unsubscribed' | 'bounced' | 'replied';
 export interface Report {
   figures: { recipients: number; accepted: number; failed: number; unconfirmed: number; skipped: number; queued: number; unsubscribes: number; replies: number | null; bounces: number | null };
   total: number;

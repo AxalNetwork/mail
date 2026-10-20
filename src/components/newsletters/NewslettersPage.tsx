@@ -95,7 +95,7 @@ export function NewslettersPage({ api, you, canAssist, toast, initialIssue }: Pr
   if (view.k === 'settings') {
     return page(<>
       {head('Newsletters / Settings', 'Newsletter settings', 'Used by every newsletter and testing email.', <button className="btn sm" onClick={() => setView({ k: 'list' })}>← Newsletters</button>)}
-      {!manage && <div className="notice warn">Only an admin changes newsletter settings.</div>}
+      {!manage && <div className="notice warn">Only admins see newsletter settings; a super admin changes them.</div>}
       {settings && manage && <SettingsTab api={api} settings={settings} you={you.email} superAdmin={data?.role === 'super_admin'} onSaved={setSettings} toast={say} />}
     </>);
   }
