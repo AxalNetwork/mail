@@ -19,12 +19,16 @@ import { bugReportsEnabled, fileBugReport } from './bugs';
 import { deliverability } from './deliverability';
 import * as sequences from './sequences';
 import { connectSender, disconnectSender, senderStatus } from './senders';
+import * as newsletters from './newsletters';
+import * as newsletterPublic from './newsletterPublic';
+import { tokensReady } from './newsletterTokens';
 
 export type { Env };
 
 /**
  * One Worker serves both halves of Axal VC Mail:
  * - /api/*  the backend (config, assistant, shared notes), handled here;
+ *   /api/public/newsletter/* are the only routes open without sign-in;
  * - all other paths are the static frontend from dist/ (wrangler assets),
  *   which Cloudflare serves without invoking this code.
  */
@@ -47,6 +51,9 @@ export default {
     ctx.waitUntil(snoozes.runSnoozes(env).then(r => {
       if (r.woke) console.log('Snoozes woken:', r.woke);
     }).catch(e => console.error('Snooze run failed (is migration 0011 applied?)', e)));
+    ctx.waitUntil(newsletters.runNewsletters(env).then(r => {
+      if (r.sent || r.failed || r.confirmations || r.started || r.paused) console.log('Newsletters:', JSON.stringify(r));
+    }).catch(e => console.error('Newsletter run failed (is migration 0014 applied?)', e)));
   }
 } satisfies ExportedHandler<Env>;
 
@@ -66,12 +73,16 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
         notes: !!env.DB,
         session: !!env.DB,
         bugReports: bugReportsEnabled(env),
-        github: githubEnabled(env)
+        github: githubEnabled(env),
+        newsletters: !!env.DB && tokensReady(env)
       },
       200,
       { 'Cache-Control': 'public, max-age=60' }
     );
   }
+
+  // Public newsletter signup (from the website) and subscriber pages: own origin rules, no sign-in.
+  if (path.startsWith('/api/public/newsletter/')) return newsletterPublic.route(req, env, url);
 
   // State-changing requests must come from our own pages.
   if (method !== 'GET') {
@@ -112,6 +123,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/analytics/deliverability' && method === 'GET') return json(await deliverability(env, url));
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
+  if (path === '/api/newsletters' || path.startsWith('/api/newsletters/')) return newsletters.route(req, env, user, url);
   if (path === '/api/tasks' || path.startsWith('/api/tasks/')) return tasks.route(req, env, user, url);
   if (path === '/api/approvals' || path.startsWith('/api/approvals/')) return approvals.route(req, env, user, url);
   if (path === '/api/snoozes') return snoozes.route(req, env, user, url);
