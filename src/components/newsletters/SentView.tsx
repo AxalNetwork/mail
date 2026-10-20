@@ -11,11 +11,11 @@ const FIGS: [keyof Report['figures'], string, string][] = [
   ['unconfirmed', 'Unconfirmed', 'No answer from the provider. Check Sent mail'],
   ['replies', 'Replies', 'Replies received by the sending mailbox'],
   ['bounces', 'Bounce notices', 'Bounce emails received after sending'],
-  ['unsubscribes', 'Unsubscribes', 'One click, from this issue']
+  ['unsubscribes', 'Unsubscribes', 'One click, a reply or an email; reported to StudioOS']
 ];
-const FILTERS: ['' | RecipientStatus, string][] = [['', 'All'], ['accepted', 'Accepted'], ['failed', 'Failed'], ['unconfirmed', 'Unconfirmed'], ['skipped', 'Skipped'], ['unsubscribed', 'Unsubscribed'], ['queued', 'Waiting']];
-const TONE: Record<RecipientStatus, string> = { accepted: 'ok', failed: 'danger', unconfirmed: 'warn', skipped: '', queued: '', unsubscribed: '' };
-const LABEL: Record<RecipientStatus, string> = { accepted: 'Accepted', failed: 'Failed', unconfirmed: 'Unconfirmed', skipped: 'Skipped', queued: 'Waiting', unsubscribed: 'Unsubscribed' };
+const FILTERS: ['' | RecipientStatus, string][] = [['', 'All'], ['accepted', 'Accepted'], ['failed', 'Failed'], ['unconfirmed', 'Unconfirmed'], ['bounced', 'Bounced'], ['unsubscribed', 'Unsubscribed'], ['replied', 'Replied'], ['skipped', 'Skipped'], ['queued', 'Waiting']];
+const TONE: Record<RecipientStatus, string> = { accepted: 'ok', failed: 'danger', unconfirmed: 'warn', skipped: '', queued: '', unsubscribed: '', bounced: 'danger', replied: 'accent' };
+const LABEL: Record<RecipientStatus, string> = { accepted: 'Accepted', failed: 'Failed', unconfirmed: 'Unconfirmed', skipped: 'Skipped', queued: 'Waiting', unsubscribed: 'Unsubscribed', bounced: 'Bounced', replied: 'Replied' };
 const time = (t: number | null) => (t ? new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—');
 
 interface Props {

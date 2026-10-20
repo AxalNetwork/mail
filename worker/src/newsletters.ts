@@ -2,6 +2,7 @@ import type { Env } from './env';
 import type { User } from './auth';
 import { HttpError, json, readJson } from './http';
 import { SenderUnavailable, senderToken } from './senders';
+import { addOptOut, threadOutcome, type GmailMsg } from './sequences';
 import { buildMime, base64Url } from '../../src/lib/mime';
 import { renderIssue, renderSystem, safeUrl } from '../../src/lib/newsletter/render';
 import { blockStrings, templateDef } from '../../src/lib/newsletter/templates';
@@ -388,24 +389,24 @@ async function sendTest(env: Env, user: User, r: IssueRow) {
 
 /** Each recipient of an issue and what happened, for the sent page. `q` searches name and email; `status` filters. */
 async function report(env: Env, r: IssueRow, q: URLSearchParams) {
-  const rows = (await env.DB.prepare(`SELECT n.email, s.first_name, s.last_name, n.status, n.error, n.sent_at,
+  const rows = (await env.DB.prepare(`SELECT n.email, s.first_name, s.last_name, n.status, n.error, n.sent_at, n.outcome,
       EXISTS (SELECT 1 FROM nl_events e WHERE e.issue_id = n.issue_id AND e.subscriber_id = n.subscriber_id AND e.kind = 'unsubscribe') AS unsub
       FROM nl_sends n LEFT JOIN nl_subscribers s ON s.id = n.subscriber_id WHERE n.issue_id = ?1
-    UNION ALL SELECT email, first_name, last_name, status, error, sent_at, 0 AS unsub FROM nl_ext_sends WHERE issue_id = ?1`).bind(r.id)
-    .all<{ email: string; first_name: string | null; last_name: string | null; status: string; error: string | null; sent_at: number | null; unsub: number }>()).results;
+    UNION ALL SELECT email, first_name, last_name, status, error, sent_at, outcome, outcome = 'opted_out' AS unsub FROM nl_ext_sends WHERE issue_id = ?1`).bind(r.id)
+    .all<{ email: string; first_name: string | null; last_name: string | null; status: string; error: string | null; sent_at: number | null; outcome: string | null; unsub: number }>()).results;
   const label = (x: (typeof rows)[number]) =>
-    x.unsub ? 'unsubscribed' : x.status === 'sent' ? 'accepted' : x.status === 'unconfirmed' || (x.status === 'failed' && (x.error || '').startsWith('Unconfirmed')) ? 'unconfirmed'
+    x.unsub || x.outcome === 'opted_out' ? 'unsubscribed' : x.outcome === 'bounced' ? 'bounced' : x.outcome === 'replied' ? 'replied' : x.status === 'sent' ? 'accepted' : x.status === 'unconfirmed' || (x.status === 'failed' && (x.error || '').startsWith('Unconfirmed')) ? 'unconfirmed'
       : x.status === 'failed' ? 'failed' : x.status === 'skipped' ? 'skipped' : 'queued';
   const all = rows.map(x => ({
     name: [x.first_name, x.last_name].filter(Boolean).join(' '), email: x.email || 'deleted subscriber', status: label(x), time: x.sent_at,
-    detail: label(x) === 'unsubscribed' ? 'Unsubscribed from this issue' : (x.error || '').replace(/^Unconfirmed: /, '')
+    detail: label(x) === 'unsubscribed' ? 'Unsubscribed from this issue' : label(x) === 'bounced' ? 'Bounce notice received' : label(x) === 'replied' ? 'Replied: see the sending mailbox' : (x.error || '').replace(/^Unconfirmed: /, '')
   }));
   const figures = {
-    recipients: all.length, accepted: all.filter(x => x.status === 'accepted' || x.status === 'unsubscribed').length, failed: all.filter(x => x.status === 'failed').length,
+    recipients: all.length, accepted: all.filter(x => ['accepted', 'unsubscribed', 'bounced', 'replied'].includes(x.status)).length, failed: all.filter(x => x.status === 'failed').length,
     unconfirmed: all.filter(x => x.status === 'unconfirmed').length, skipped: all.filter(x => x.status === 'skipped').length, queued: all.filter(x => x.status === 'queued').length,
     unsubscribes: all.filter(x => x.status === 'unsubscribed').length,
-    // Replies and bounce notices aren't read from the sending mailbox yet.
-    replies: null as number | null, bounces: null as number | null
+    // Read from the sending mailbox by the cron, up to a week after sending.
+    replies: rows.filter(x => x.outcome === 'replied' || x.outcome === 'opted_out').length as number | null, bounces: rows.filter(x => x.outcome === 'bounced').length as number | null
   };
   const text = (q.get('q') || '').trim().toLowerCase();
   const st = q.get('status') || '';
@@ -586,7 +587,7 @@ async function gmailSend(sender: { token: string }, raw: string): Promise<{ id: 
   return { id: j.id, threadId: j.threadId || '' };
 }
 
-export interface NewsletterRun { confirmations: number; sent: number; failed: number; unconfirmed: number; started: number; finished: number; paused: number; limited: boolean }
+export interface NewsletterRun { confirmations: number; sent: number; failed: number; unconfirmed: number; started: number; finished: number; paused: number; limited: boolean; replies: number; bounces: number; optOuts: number; eventsSent: number }
 
 interface Target {
   table: 'nl_sends' | 'nl_ext_sends';
@@ -620,7 +621,7 @@ async function materializeLink(env: Env, r: IssueRow) {
 
 /** Cron: queued confirmations, then due issues, within the batch size, the per-minute throttle and the daily limit. Safe to run twice. */
 export async function runNewsletters(env: Env, now = Date.now()): Promise<NewsletterRun> {
-  const out: NewsletterRun = { confirmations: 0, sent: 0, failed: 0, unconfirmed: 0, started: 0, finished: 0, paused: 0, limited: false };
+  const out: NewsletterRun = { confirmations: 0, sent: 0, failed: 0, unconfirmed: 0, started: 0, finished: 0, paused: 0, limited: false, replies: 0, bounces: 0, optOuts: 0, eventsSent: 0 };
   const s = await getSettings(env);
   // The cron runs every 10 minutes; the throttle spreads a run's messages over those minutes' worth.
   let budget = Math.min(s.batch_size, s.per_minute * 10);
@@ -769,8 +770,134 @@ export async function runNewsletters(env: Env, now = Date.now()): Promise<Newsle
       out.finished++;
     }
   }
+  // What happened after sending, and what StudioOS needs to know. Errors here never stop sending.
+  await watchSends(env, now, out).catch(e => console.error('Newsletter watch failed', e));
+  await watchInbox(env, now, out).catch(e => console.error('Newsletter inbox watch failed', e));
+  await flushLinkEvents(env, now, out).catch(e => console.error('StudioOS events failed', e));
   return out;
 }
+
+// ---------- after sending: replies, bounces, unsubscribes (cron) ----------
+
+const DAY_MS = 86_400_000;
+const WATCH_PER_RUN = 25;
+const RECHECK_MS = 3 * 3_600_000;
+const INBOX_SENDERS_PER_RUN = 3;
+const mailAddr = (v: string) => (/<([^>]+)>/.exec(v)?.[1] || v).trim().toLowerCase();
+
+type Outcome = 'replied' | 'bounced' | 'opted_out';
+interface WatchRow { issue_id: number; k: number | string; email: string; thread_id: string; sent_at: number; gmail_message_id: string; audience: string; sender_member: string | null; from_email: string }
+
+/** Queue an event for StudioOS: one row per (type, message), so it is never reported twice. */
+async function queueLinkEvent(env: Env, type: 'unsubscribe' | 'bounce' | 'complaint', email: string, audience: string, messageId: string, now: number) {
+  await env.DB.prepare(`INSERT OR IGNORE INTO nl_link_events (event_id, type, email, audience, message_id, at, next_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`)
+    .bind(type + ':' + messageId, type, email.toLowerCase(), audience, messageId, now).run();
+}
+
+/** What a reply, a bounce notice or an "unsubscribe" means for the person, in Mail and in StudioOS. */
+async function recordOutcome(env: Env, table: 'nl_sends' | 'nl_ext_sends', r: WatchRow, outcome: Outcome, how: string, now: number) {
+  await env.DB.prepare(`UPDATE ${table} SET outcome = ?3, checked_at = ?4 WHERE issue_id = ?1 AND ${keyCol(table)} = ?2`).bind(r.issue_id, r.k, outcome, now).run();
+  if (table === 'nl_sends') {
+    const id = Number(r.k);
+    if (outcome === 'bounced') {
+      await env.DB.prepare("UPDATE nl_subscribers SET status = 'bounced', updated_at = ?2 WHERE id = ?1 AND status = 'subscribed'").bind(id, now).run();
+      await event(env, 'bounce', how, r.issue_id, id);
+    } else if (outcome === 'opted_out') {
+      await env.DB.prepare("UPDATE nl_subscribers SET status = 'unsubscribed', unsubscribed_at = ?2, updated_at = ?2 WHERE id = ?1 AND status != 'unsubscribed'").bind(id, now).run();
+      await event(env, 'unsubscribe', how, r.issue_id, id);
+      await addOptOut(env, r.email, 'Asked to unsubscribe from a newsletter (' + how + ')');
+    } else await event(env, 'reply', how, r.issue_id, id);
+  } else {
+    if (outcome === 'bounced') await queueLinkEvent(env, 'bounce', r.email, r.audience, r.gmail_message_id || r.thread_id, now);
+    if (outcome === 'opted_out') {
+      await queueLinkEvent(env, 'unsubscribe', r.email, r.audience, r.gmail_message_id || r.thread_id, now);
+      await addOptOut(env, r.email, 'Asked to unsubscribe from a newsletter (' + how + ')');
+    }
+  }
+}
+
+async function watchRows(env: Env, table: 'nl_sends' | 'nl_ext_sends', where: string, args: unknown[], limit: number): Promise<WatchRow[]> {
+  return (await env.DB.prepare(`SELECT n.issue_id, n.${keyCol(table)} AS k, n.email, n.thread_id, n.sent_at, n.gmail_message_id, ${table === 'nl_ext_sends' ? 'n.audience' : "'' AS audience"},
+      i.sender_member, i.from_email FROM ${table} n JOIN nl_issues i ON i.id = n.issue_id WHERE ${where} LIMIT ${limit}`).bind(...args).all<WatchRow>()).results;
+}
+
+/** Read each recent send's thread in the sending mailbox: a reply, a bounce notice, or "unsubscribe". */
+async function watchSends(env: Env, now: number, out: NewsletterRun) {
+  const tokens = new Map<string, { token: string; email: string } | null>();
+  const tokenFor = async (m: string | null) => {
+    if (!m) return null;
+    if (!tokens.has(m)) tokens.set(m, await senderToken(env, m).catch(() => null));
+    return tokens.get(m) || null;
+  };
+  let left = WATCH_PER_RUN;
+  for (const table of ['nl_sends', 'nl_ext_sends'] as const) {
+    if (left <= 0) break;
+    // From 10 minutes after sending (a bounce takes a moment) to a week after.
+    const rows = await watchRows(env, table, `n.status = 'sent' AND n.outcome IS NULL AND n.thread_id IS NOT NULL AND n.sent_at > ?1 AND n.sent_at < ?3 AND (n.checked_at IS NULL OR n.checked_at < ?2)
+      ORDER BY n.checked_at IS NOT NULL, n.checked_at, n.sent_at`, [now - 7 * DAY_MS, now - RECHECK_MS, now - 10 * 60_000], left);
+    for (const r of rows) {
+      left--;
+      const sender = await tokenFor(r.sender_member);
+      const mark = () => env.DB.prepare(`UPDATE ${table} SET checked_at = ?3 WHERE issue_id = ?1 AND ${keyCol(table)} = ?2`).bind(r.issue_id, r.k, now).run();
+      if (!sender) { await mark(); continue; }
+      const res = await fetch(GMAIL + '/threads/' + encodeURIComponent(r.thread_id) + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject', { headers: { Authorization: 'Bearer ' + sender.token } }).catch(() => null);
+      if (!res || !res.ok) { await mark(); continue; }
+      const msgs = (((await res.json()) as { messages?: GmailMsg[] }).messages) || [];
+      const outcome = threadOutcome(msgs, (r.from_email || sender.email).toLowerCase(), r.email.toLowerCase(), r.sent_at - 60_000);
+      if (!outcome) { await mark(); continue; }
+      await recordOutcome(env, table, r, outcome, outcome === 'bounced' ? 'bounce notice' : outcome === 'opted_out' ? 'reply' : 'replied', now);
+      if (outcome === 'replied') out.replies++; else if (outcome === 'bounced') out.bounces++; else out.optOuts++;
+    }
+  }
+}
+
+/** The List-Unsubscribe mailto: "unsubscribe" emails to the sending address, from someone a newsletter went to. */
+async function watchInbox(env: Env, now: number, out: NewsletterRun) {
+  const senders = (await env.DB.prepare(`SELECT DISTINCT sender_member FROM nl_issues WHERE sender_member IS NOT NULL AND status IN ('sending', 'sent', 'paused') AND started_at > ?1 LIMIT ${INBOX_SENDERS_PER_RUN}`)
+    .bind(now - 30 * DAY_MS).all<{ sender_member: string }>()).results;
+  for (const { sender_member: member } of senders) {
+    const sender = await senderToken(env, member).catch(() => null);
+    if (!sender) continue;
+    const auth = { headers: { Authorization: 'Bearer ' + sender.token } };
+    const list = await fetch(GMAIL + '/messages?maxResults=20&q=' + encodeURIComponent('subject:unsubscribe newer_than:7d -from:me'), auth).catch(() => null);
+    if (!list || !list.ok) continue;
+    const ids = ((((await list.json()) as { messages?: { id: string }[] }).messages) || []).map(m => m.id).filter(id => /^[\w-]{1,64}$/.test(id));
+    for (const id of ids) {
+      if (await env.DB.prepare('SELECT 1 FROM nl_inbound WHERE message_id = ?1').bind(id).first()) continue;
+      await env.DB.prepare('INSERT OR IGNORE INTO nl_inbound (message_id, at) VALUES (?1, ?2)').bind(id, now).run();
+      const m = await fetch(GMAIL + '/messages/' + id + '?format=metadata&metadataHeaders=From&metadataHeaders=Subject', auth).catch(() => null);
+      if (!m || !m.ok) continue;
+      const msg = (await m.json()) as GmailMsg;
+      const from = mailAddr(msg.payload?.headers?.find(h => h.name.toLowerCase() === 'from')?.value || '');
+      const subject = msg.payload?.headers?.find(h => h.name.toLowerCase() === 'subject')?.value || '';
+      if (!from.includes('@') || !/\bunsubscribe\b/i.test(subject)) continue;
+      // Only someone this sender actually sent a newsletter to.
+      for (const table of ['nl_sends', 'nl_ext_sends'] as const) {
+        const rows = await watchRows(env, table, `n.status = 'sent' AND n.email = ?1 COLLATE NOCASE AND i.sender_member = ?2 ORDER BY n.sent_at DESC`, [from, member], 1);
+        if (rows[0]) { await recordOutcome(env, table, rows[0], 'opted_out', 'unsubscribe email', now); out.optOuts++; break; }
+      }
+    }
+  }
+}
+
+/** Deliver queued events to StudioOS, with backoff on failure (10 min, doubling, at most a day). */
+export async function flushLinkEvents(env: Env, now: number, out?: NewsletterRun) {
+  if (!link.linkConfigured(env)) return;
+  const due = (await env.DB.prepare('SELECT * FROM nl_link_events WHERE sent_at IS NULL AND next_at <= ?1 ORDER BY at LIMIT 100').bind(now)
+    .all<{ event_id: string; type: 'unsubscribe' | 'bounce' | 'complaint'; email: string; audience: string; at: number; attempts: number }>()).results;
+  if (!due.length) return;
+  try {
+    await link.postEvents(env, due.map(e => ({ type: e.type, email: e.email, audience: e.audience || undefined, message_id: e.event_id, at: e.at })));
+    for (const e of due) await env.DB.prepare('UPDATE nl_link_events SET sent_at = ?2, attempts = attempts + 1, last_error = NULL WHERE event_id = ?1').bind(e.event_id, now).run();
+    if (out) out.eventsSent += due.length;
+  } catch (err) {
+    for (const e of due) {
+      const wait = Math.min(DAY_MS, 10 * 60_000 * 2 ** e.attempts);
+      await env.DB.prepare('UPDATE nl_link_events SET attempts = attempts + 1, next_at = ?2, last_error = ?3 WHERE event_id = ?1').bind(e.event_id, now + wait, (err instanceof Error ? err.message : String(err)).slice(0, 300)).run();
+    }
+  }
+}
+
 
 /** The browser copy of a sent issue, for "View in browser": only for someone it was actually sent to. */
 export async function viewCopy(env: Env, issueId: number, subscriberId: number): Promise<string | null> {

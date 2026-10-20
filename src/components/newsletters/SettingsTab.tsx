@@ -98,7 +98,8 @@ export function SettingsTab({ api, settings: s, you, superAdmin, onSaved, toast 
       <div className="nl-footbar">
         <span className="faint">Used by every newsletter and testing email.{s.updatedBy ? ' Last changed by ' + s.updatedBy + ' · ' + when(s.updatedAt) + '.' : ''}</span>
         <span style={{ flex: 1 }} />
-        <button className="btn primary sm" disabled={busy} onClick={() => save({ postalAddress: f.postalAddress, disclaimer: f.disclaimer, fromName: f.fromName, defaultFrom: f.defaultFrom, dailyLimit: f.dailyLimit, perMinute: f.perMinute }, 'Settings saved.')}>Save changes</button>
+        {!superAdmin && <span className="faint">Only a super admin changes these.</span>}
+        <button className="btn primary sm" disabled={busy || !superAdmin} onClick={() => save({ postalAddress: f.postalAddress, disclaimer: f.disclaimer, fromName: f.fromName, defaultFrom: f.defaultFrom, dailyLimit: f.dailyLimit, perMinute: f.perMinute }, 'Settings saved.')}>Save changes</button>
       </div>
 
       <div className="card panel">
@@ -121,7 +122,7 @@ export function SettingsTab({ api, settings: s, you, superAdmin, onSaved, toast 
         <label className="nl-field"><span className="nl-field-head"><b>Websites allowed to sign people up</b><em className="faint">one per line{superAdmin ? '' : ' · a super admin changes these'}</em></span>
           <textarea className="textarea" rows={2} disabled={!superAdmin} value={f.origins} onChange={e => setF({ ...f, origins: e.target.value })} />
         </label>
-        <div><button className="btn sm" disabled={busy} onClick={() => save({ doubleOptIn: f.doubleOptIn, ...(superAdmin ? { allowedOrigins: f.origins.split(/\s+/).filter(Boolean) } : {}) })}>Save signup settings</button></div>
+        <div><button className="btn sm" disabled={busy || !superAdmin} onClick={() => save({ doubleOptIn: f.doubleOptIn, ...(superAdmin ? { allowedOrigins: f.origins.split(/\s+/).filter(Boolean) } : {}) })}>Save signup settings</button></div>
       </div>
     </>
   );
