@@ -89,12 +89,12 @@ const settingsOut = async (s: SettingsRow, env: Env) => ({
 });
 
 async function putSettings(env: Env, user: User, b: Record<string, unknown>) {
-  requireManager(user);
+  // Every newsletter's footer, sender and limits: super admins edit, admins read.
+  if (user.role !== 'super_admin') throw new HttpError(403, 'Only a super admin changes newsletter settings.', 'super_admin_only');
   const cur = await getSettings(env);
   const origins = Array.isArray(b.allowedOrigins) ? b.allowedOrigins : originsOf(cur);
   const clean = origins.map(o => str(o, 200).replace(/\/+$/, '')).filter(Boolean);
   if (clean.some(o => !/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(o))) throw new HttpError(400, 'Allowed origins are https:// addresses without a path, e.g. https://axal.vc.');
-  if ((Array.isArray(b.allowedOrigins) || b.systemSender !== undefined) && user.role !== 'super_admin') throw new HttpError(403, 'Only a super admin changes the website connection or the system sender.', 'super_admin_only');
   let sender = cur.system_sender;
   let systemFrom = cur.system_from;
   if (b.systemSender !== undefined) {
@@ -179,7 +179,7 @@ async function excluded(env: Env, ids: number[]) {
 interface IssueRow {
   id: number; title: string; template: TemplateId; subject: string; preheader: string; edition: string; blocks: string; list_ids: string;
   from_email: string; from_name: string; signoff: string; status: string; version: number; content_hash: string; review_requested_by: string | null;
-  approved_hash: string | null; approved_by: string | null; approved_at: number | null; sender_member: string | null; scheduled_at: number | null;
+  approved_hash: string | null; approved_by: string | null; approved_at: number | null; approved_render?: string | null; sender_member: string | null; scheduled_at: number | null;
   started_at: number | null; sent_at: number | null; recipients: number; last_error: string | null; created_by: string; updated_by: string; created_at: number; updated_at: number;
   audiences: string; programme_uid: string | null; variant: string;
 }
@@ -187,6 +187,23 @@ interface IssueRow {
 const AUDIENCE_KEY = /^[\w:.-]{1,120}$/;
 const audiencesOf = (r: Pick<IssueRow, 'audiences'>): string[] => { try { return (JSON.parse(r.audiences || '[]') as string[]).filter(k => typeof k === 'string' && AUDIENCE_KEY.test(k)); } catch { return []; } };
 const approvedNow = (r: IssueRow) => !!r.approved_hash && r.approved_hash === r.content_hash;
+
+/** SHA-256 of the email exactly as it renders now (for a fixed sample reader), footer and sender included. */
+async function renderHash(env: Env, r: IssueRow) {
+  const s = await getSettings(env);
+  const so = signoffOf(r);
+  const html = renderIssue({
+    content: contentOf(r), edition: r.edition, brand: brandOf(s),
+    recipient: { firstName: 'Sample', lastName: 'Reader', company: 'Sample Co', email: 'reader@example.com', unsubscribeUrl: '{unsubscribe_url}', preferencesUrl: '{preferences_url}', viewUrl: '{view_in_browser_url}' },
+    sender: { name: r.from_name || s.from_name, title: so.title, email: r.from_email, calendarUrl: so.calendarUrl }
+  }).html;
+  return sha256(html);
+}
+
+/** Approved, and the email still renders exactly as it did when approved. */
+async function approvedExactly(env: Env, r: IssueRow) {
+  return approvedNow(r) && (!r.approved_render || r.approved_render === (await renderHash(env, r)));
+}
 
 const contentOf = (r: IssueRow): IssueContent => ({ template: r.template, subject: r.subject, preheader: r.preheader, blocks: JSON.parse(r.blocks) as Block[] });
 const signoffOf = (r: IssueRow): { title: string; calendarUrl: string } => { try { return { title: '', calendarUrl: '', ...JSON.parse(r.signoff) }; } catch { return { title: '', calendarUrl: '' }; } };
@@ -244,8 +261,8 @@ async function create(env: Env, user: User, b: { template?: unknown; title?: unk
   const variant = b.variant === 'online' && def.variants?.online ? 'online' : '';
   const all = (await env.DB.prepare('SELECT id, key FROM nl_lists').all<{ id: number; key: string }>()).results;
   const ids = def.lists.map(k => all.find(l => l.key === k)?.id).filter((x): x is number => !!x);
-  // Testing emails go to the programme's picked testers (StudioOS), except "Not this time".
-  const auds = def.testing && b.template !== 'pt_not' ? ['testers:' + programme] : [];
+  // Testing emails go to the programme's picked testers (StudioOS); "Not this time" only to its declined applicants.
+  const auds = def.testing ? [(b.template === 'pt_not' ? 'declined:' : 'testers:') + programme] : [];
   const product = str(b.programmeName, 120);
   let blocks = JSON.stringify((variant ? def.variants!.online : def.blocks)());
   let subject = def.subject;
@@ -313,7 +330,7 @@ async function blockers(env: Env, r: IssueRow): Promise<string[]> {
   const auds = audiencesOf(r);
   const out: string[] = [];
   if (!r.subject.trim()) out.push('Add a subject.');
-  if (!ids.length && !auds.length) out.push(r.template === 'pt_not' ? 'StudioOS doesn’t share the applicants who weren’t picked yet, so this email has no audience. StudioOS tells them in the app.' : 'Choose an audience.');
+  if (!ids.length && !auds.length) out.push('Choose an audience.');
   else if (!auds.length && !(await audience(env, ids, r.template))) out.push('Nobody on these lists is subscribed yet.');
   if (auds.length && !link.linkConfigured(env)) out.push('Connect StudioOS (the link secret) to send to its lists.');
   if (!s.postal_address.trim()) out.push('Add the firm’s postal address in Newsletters → Settings (required in every newsletter).');
@@ -330,6 +347,7 @@ async function schedule(env: Env, user: User, r: IssueRow, b: { version?: unknow
   requireManager(user);
   stale(r, b);
   if (r.status !== 'approved' || !approvedNow(r)) throw new HttpError(409, 'Nothing is sent without an approved version. Ask for approval first.', 'needs_approval');
+  if (!(await approvedExactly(env, r))) throw new HttpError(409, 'The footer or sender settings changed after approval, so the email isn’t the one approved. Ask for approval again.', 'render_changed');
   const problems = await blockers(env, r);
   if (problems.length) throw new HttpError(400, problems.join(' '), 'checks_failed', { problems });
   let sender: { token: string; email: string };
@@ -556,7 +574,7 @@ export async function sendWelcome(env: Env, sub: { id: number; email: string; fi
 
 class GmailError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 
-async function gmailSend(sender: { token: string }, raw: string): Promise<string> {
+async function gmailSend(sender: { token: string }, raw: string): Promise<{ id: string; threadId: string }> {
   const res = await fetch(GMAIL + '/messages/send', {
     method: 'POST', headers: { Authorization: 'Bearer ' + sender.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ raw: base64Url(new TextEncoder().encode(raw)) })
   });
@@ -564,7 +582,8 @@ async function gmailSend(sender: { token: string }, raw: string): Promise<string
     const msg = ((await res.json().catch(() => ({}))) as { error?: { message?: string } }).error?.message || String(res.status);
     throw new GmailError(res.status, msg);
   }
-  return ((await res.json()) as { id: string }).id;
+  const j = (await res.json()) as { id: string; threadId?: string };
+  return { id: j.id, threadId: j.threadId || '' };
 }
 
 export interface NewsletterRun { confirmations: number; sent: number; failed: number; unconfirmed: number; started: number; finished: number; paused: number; limited: boolean }
@@ -622,8 +641,8 @@ export async function runNewsletters(env: Env, now = Date.now()): Promise<Newsle
   // Start scheduled issues whose time has come: fix the recipient list now.
   const due = (await env.DB.prepare("SELECT * FROM nl_issues WHERE status = 'scheduled' AND scheduled_at <= ?1 ORDER BY scheduled_at").bind(now).all<IssueRow>()).results;
   for (const r of due) {
-    if (!approvedNow(r)) {
-      await env.DB.prepare("UPDATE nl_issues SET status = 'paused', last_error = 'Not approved as it is now.' WHERE id = ?1").bind(r.id).run();
+    if (!(await approvedExactly(env, r))) {
+      await env.DB.prepare("UPDATE nl_issues SET status = 'paused', last_error = 'Not approved as it is now (the content, footer or sender changed). Ask for approval again.' WHERE id = ?1").bind(r.id).run();
       out.paused++;
       continue;
     }
@@ -715,11 +734,12 @@ export async function runNewsletters(env: Env, now = Date.now()): Promise<Newsle
         from: { name: r.from_name || s.from_name || 'Axal VC', email: r.from_email || sender.email, org: '' },
         to: [{ name: [x.first_name, x.last_name].filter(Boolean).join(' '), email: x.email, org: '' }], cc: [], bcc: [],
         subject: mergeSubject(content.subject, x), html: copy.html, text: copy.text, attachments: [],
-        headers: x.oneClick ? [['List-Unsubscribe', '<' + x.oneClick + '>'], ['List-Unsubscribe-Post', 'List-Unsubscribe=One-Click']] : []
+        // One click (RFC 8058) and, for mail apps that only know it, an email to the sender (read by watchMailbox).
+        headers: x.oneClick ? [['List-Unsubscribe', '<' + x.oneClick + '>, <mailto:' + (r.from_email || sender.email) + '?subject=unsubscribe>'], ['List-Unsubscribe-Post', 'List-Unsubscribe=One-Click']] : []
       });
       try {
-        const id = await gmailSend(sender, raw);
-        await env.DB.prepare(`UPDATE ${x.table} SET status = 'sent', gmail_message_id = ?3, sent_at = ?4 WHERE issue_id = ?1 AND ${col} = ?2`).bind(r.id, x.key, id, now).run();
+        const sentMsg = await gmailSend(sender, raw);
+        await env.DB.prepare(`UPDATE ${x.table} SET status = 'sent', gmail_message_id = ?3, sent_at = ?4, thread_id = ?5 WHERE issue_id = ?1 AND ${col} = ?2`).bind(r.id, x.key, sentMsg.id, now, sentMsg.threadId || null).run();
         if (x.table === 'nl_sends') await env.DB.prepare('UPDATE nl_subscribers SET last_sent_at = ?2 WHERE id = ?1').bind(x.key, now).run();
         out.sent++;
       } catch (e) {
@@ -895,8 +915,8 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
       stale(r, body);
       if (r.status !== 'in_review') throw new HttpError(409, 'Ask for review first.');
       if ((r.review_requested_by === user.memberEmail || r.updated_by === user.memberEmail) && user.role !== 'super_admin') throw new HttpError(403, 'Ask another admin to approve a newsletter you asked for or edited last.');
-      const res = await env.DB.prepare("UPDATE nl_issues SET status = 'approved', approved_hash = content_hash, approved_by = ?2, approved_at = ?3 WHERE id = ?1 AND version = ?4 AND status = 'in_review'")
-        .bind(r.id, user.memberEmail, Date.now(), r.version).run();
+      const res = await env.DB.prepare("UPDATE nl_issues SET status = 'approved', approved_hash = content_hash, approved_by = ?2, approved_at = ?3, approved_render = ?5 WHERE id = ?1 AND version = ?4 AND status = 'in_review'")
+        .bind(r.id, user.memberEmail, Date.now(), r.version, await renderHash(env, r)).run();
       if (!res.meta.changes) throw new HttpError(409, 'This newsletter changed since you opened it.', 'issue_changed');
       await event(env, 'approved', user.memberEmail + ' · version ' + r.version + ' · ' + r.content_hash.slice(0, 12), r.id, null);
       return json({ issue: await issueOut(env, user, await load(env, r.id), true) });
@@ -921,7 +941,7 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
     case '/resume': {
       requireManager(user);
       if (r.status !== 'paused') throw new HttpError(409, 'Only a paused newsletter resumes.');
-      if (!approvedNow(r)) throw new HttpError(409, 'Not approved as it is now.', 'needs_approval');
+      if (!(await approvedExactly(env, r))) throw new HttpError(409, 'Not approved as it is now. Ask for approval again.', 'needs_approval');
       try { await senderToken(env, r.sender_member || ''); } catch (e) { throw new HttpError(409, e instanceof Error ? e.message : String(e), 'sender_not_connected'); }
       await env.DB.prepare(`UPDATE nl_issues SET status = CASE WHEN started_at IS NULL THEN 'scheduled' ELSE 'sending' END, last_error = NULL WHERE id = ?1`).bind(r.id).run();
       return json({ issue: await issueOut(env, user, await load(env, r.id), true) });

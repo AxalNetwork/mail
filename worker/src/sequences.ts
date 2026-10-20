@@ -217,7 +217,7 @@ async function stopRecipient(env: Env, user: User, s: SeqRow, enrollmentId: numb
   return detail(env, await getSeq(env, s.id), user);
 }
 
-async function addOptOut(env: Env, email: string, reason: string) {
+export async function addOptOut(env: Env, email: string, reason: string) {
   await env.DB.prepare('INSERT INTO opt_outs (email, reason, created_at) VALUES (?1, ?2, ?3) ON CONFLICT (email) DO NOTHING').bind(email, reason, Date.now()).run();
 }
 
@@ -254,12 +254,12 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
 const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 
 interface GmailHeader { name: string; value: string }
-interface GmailMsg { id: string; threadId: string; internalDate?: string; snippet?: string; payload?: { headers?: GmailHeader[] } }
+export interface GmailMsg { id: string; threadId: string; internalDate?: string; snippet?: string; payload?: { headers?: GmailHeader[] } }
 const hdr = (m: GmailMsg, n: string) => m.payload?.headers?.find(h => h.name.toLowerCase() === n.toLowerCase())?.value || '';
 const addr = (v: string) => (/<([^>]+)>/.exec(v)?.[1] || v).trim().toLowerCase();
 
 /** What happened in the thread since the first send: a reply, a bounce or an opt-out stops the sequence. */
-function threadOutcome(msgs: GmailMsg[], sender: string, recipient: string, since: number): 'replied' | 'bounced' | 'opted_out' | null {
+export function threadOutcome(msgs: GmailMsg[], sender: string, recipient: string, since: number): 'replied' | 'bounced' | 'opted_out' | null {
   for (const m of msgs) {
     if (Number(m.internalDate || 0) < since) continue;
     const from = addr(hdr(m, 'From'));

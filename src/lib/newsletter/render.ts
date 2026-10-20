@@ -274,12 +274,13 @@ function footer(brand: Brand, lines: string[], links: [string, string][], discla
 }
 
 /** Replace merge tokens in rendered output. Values are escaped for HTML. */
-export function merge(s: string, r: Recipient, sender: Sender, html: boolean): string {
+export function merge(s: string, r: Recipient, sender: Sender, html: boolean, brand?: Brand): string {
   const e = html ? esc : (x: string) => x;
   const vals: Record<string, string> = {
     first_name: r.firstName, last_name: r.lastName, company: r.company, email: r.email,
     unsubscribe_url: r.unsubscribeUrl, preferences_url: r.preferencesUrl, view_in_browser_url: r.viewUrl,
-    sender_name: sender.name, sender_title: sender.title, sender_email: sender.email, calendar_url: sender.calendarUrl
+    sender_name: sender.name, sender_title: sender.title, sender_email: sender.email, calendar_url: sender.calendarUrl,
+    postal_address: (brand?.postalAddress || '').replace(/\n/g, ', '), disclaimer: brand?.disclaimer || ''
   };
   return s.replace(/\{([a-z_]+)(?:\|([^}]*))?\}/g, (m, k: string, fb?: string) => {
     if (!(k in vals)) return m;
@@ -327,7 +328,7 @@ export function renderIssue({ content, edition, brand, recipient, sender }: Rend
     [brand.fromName || 'Axal VC', brand.postalAddress.replace(/\n/g, ', ')].filter(Boolean).join(' · '),
     isLetter ? 'Questions? Reply to this email.\nEmail preferences: {preferences_url}' : 'View in browser: {view_in_browser_url}\nManage preferences: {preferences_url}\nUnsubscribe: {unsubscribe_url}'
   ].filter(Boolean).join('\n\n');
-  return { html: merge(html, recipient, sender, true), text: merge(text, recipient, sender, false) };
+  return { html: merge(html, recipient, sender, true, brand), text: merge(text, recipient, sender, false, brand) };
 }
 
 // ---------- system emails (double opt-in and confirmations) ----------
