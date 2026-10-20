@@ -16,7 +16,7 @@ import type { Env } from '../env';
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql', '0014_newsletters.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -222,7 +222,7 @@ describe('routing', () => {
 
   it('exposes public config', async () => {
     const r = await call('/api/config');
-    expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true, bugReports: false, github: false });
+    expect(await r.json()).toEqual({ googleClientId: 'client-1', orgDomain: 'axal.vc', assistant: true, notes: true, session: true, bugReports: false, github: false, newsletters: false });
     env.ANTHROPIC_API_KEY = undefined;
     expect((await (await call('/api/config')).json() as { assistant: boolean }).assistant).toBe(false);
   });
@@ -1267,7 +1267,7 @@ describe('tasks', () => {
     // Only a super admin creates tasks.
     expect((await post('/api/tasks', 'good', { title: 'Send the deck to Maya' })).status).toBe(403);
     expect((await post('/api/tasks', 'ada', { title: 'Send the deck to Maya' })).status).toBe(403);
-    const r = await post('/api/tasks', 'boss', { title: 'Send the deck to Maya', priority: 'high', dueAt: Date.UTC(2026, 9, 20), assignee: 'julian@axal.vc', sourceMailbox: 'boss@axal.vc', sourceThreadId: 't1', sourceSubject: 'Seed round' });
+    const r = await post('/api/tasks', 'boss', { title: 'Send the deck to Maya', priority: 'high', dueAt: Date.now() + 30 * 86_400_000, assignee: 'julian@axal.vc', sourceMailbox: 'boss@axal.vc', sourceThreadId: 't1', sourceSubject: 'Seed round' });
     expect(r.status).toBe(201);
     const t = await task(r);
     expect(t).toMatchObject({ assignee: 'julian@axal.vc', status: 'open', createdVia: 'manual', source: { threadId: 't1' } });

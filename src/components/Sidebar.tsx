@@ -3,12 +3,12 @@ import type { FolderCounts } from '../providers/types';
 export type View =
   | 'inbox' | 'starred' | 'snoozed' | 'sent' | 'drafts' | 'scheduled' | 'all' | 'search'
   | 'bulk' | 'admin' | 'members' | 'sequences'
-  | 'shared' | 'internal' | 'contacts' | 'documents' | 'automations' | 'tasks' | 'analytics';
+  | 'shared' | 'internal' | 'contacts' | 'documents' | 'automations' | 'tasks' | 'analytics' | 'newsletters';
 
 export const VIEW_TITLES: Record<View, string> = {
   inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', all: 'All Mail',
   search: 'Search', bulk: 'Bulk email', admin: 'Administration', members: 'Members & access', sequences: 'Outreach sequences', shared: 'Shared Inboxes', internal: 'Internal',
-  contacts: 'Contacts & Relationships', documents: 'Documents', automations: 'AI Automations', tasks: 'Tasks & Approvals', analytics: 'Analytics'
+  contacts: 'Contacts & Relationships', documents: 'Documents', automations: 'AI Automations', tasks: 'Tasks & Approvals', analytics: 'Analytics', newsletters: 'Newsletters'
 };
 
 interface Props {
@@ -51,6 +51,7 @@ export function Sidebar({ view, counts, open, hide, footer, onGo, onCompose }: P
         {item('automations')}
         {item('tasks', counts.tasks)}
         {item('analytics')}
+        {item('newsletters')}
       </div>
       <div className="nav-group">
         <span className="mono-label">Organization</span>

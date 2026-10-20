@@ -783,3 +783,47 @@ button.trow.seqs { width: 100%; text-align: left; border-left: 0; border-right: 
 @media (max-width: 760px) {
   .tf-field { flex-basis: 100%; }
 }
+
+/* ---------- newsletters ---------- */
+.trow.nl-issues { grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) 120px 150px 110px; padding: 10px 16px; min-width: 760px; }
+.trow.nl-lists { grid-template-columns: minmax(0, 2fr) 100px 130px 130px 140px; padding: 10px 16px; min-width: 700px; }
+.trow.nl-subs { grid-template-columns: minmax(0, 2fr) 110px minmax(0, 1.5fr) 90px 100px; padding: 10px 16px; min-width: 720px; }
+.trow.nl-issues.link-like, .trow.nl-subs.link-like { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line-2); background: var(--surface); cursor: pointer; font: inherit; color: inherit; }
+.trow.nl-issues.link-like:hover, .trow.nl-subs.link-like:hover { background: var(--surface-2); }
+.trow.nl-subs.on { background: var(--accent-soft); }
+.nl-templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.nl-template { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); cursor: pointer; font: inherit; color: inherit; }
+.nl-template:hover:not(:disabled) { border-color: var(--accent-line); background: var(--accent-soft); }
+.nl-template span { font-size: 12px; }
+.nl-editor { display: flex; flex-direction: column; gap: 12px; }
+.nl-editor-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nl-title { flex: 1 1 260px; font-size: 16px; font-weight: 700; }
+.nl-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 660px); gap: 14px; align-items: start; }
+.nl-form { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.nl-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.nl-field em { font-style: normal; margin-left: 6px; }
+.nl-field .input, .nl-field .textarea { color: var(--text); font-size: 13px; }
+.nl-token { font-family: var(--mono); font-size: 10.5px; background: var(--bg); border-radius: 4px; padding: 1px 4px; margin: 0 3px; }
+.nl-block { border: 1px solid var(--line-2); border-radius: var(--r); }
+.nl-block.open { border-color: var(--accent-line); }
+.nl-block-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; }
+.nl-block-name { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: baseline; border: 0; background: transparent; text-align: left; cursor: pointer; font: inherit; color: inherit; padding: 4px 0; }
+.nl-block-name .faint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.nl-block-tools { display: flex; gap: 2px; }
+.nl-block-body { display: flex; flex-direction: column; gap: 8px; padding: 4px 10px 12px; }
+.nl-items { display: flex; flex-direction: column; gap: 6px; }
+.nl-item { display: grid; grid-template-columns: 1.2fr 1.6fr .8fr 1.2fr auto; gap: 4px; }
+.nl-item .input { height: 30px; font-size: 12.5px; color: var(--text); padding: 0 8px; }
+.nl-preview { position: sticky; top: 0; padding: 12px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.nl-frame { width: 100%; height: 76vh; border: 1px solid var(--line); border-radius: var(--r); background: #fff; }
+.nl-frame.mobile { width: 375px; }
+.nl-text { width: 100%; margin: 0; padding: 12px; max-height: 76vh; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r); }
+.nl-progress { height: 6px; border-radius: 999px; background: var(--bg); overflow: hidden; }
+.nl-progress span { display: block; height: 100%; background: var(--accent); }
+.nl-actions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.tone-ok { color: var(--ok); }
+@media (max-width: 1100px) {
+  .nl-cols { grid-template-columns: 1fr; }
+  .nl-preview { position: static; }
+  .nl-item { grid-template-columns: 1fr 1fr; }
+}

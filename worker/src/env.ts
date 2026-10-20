@@ -29,6 +29,10 @@ export interface Env {
   GITHUB_ISSUES_TOKENS?: string;
   /** owner/repo that bug reports go to (default AxalNetwork/mail). */
   GITHUB_REPO?: string;
+  /** Public address of this app, for links in newsletters (default https://mail.axal.vc). */
+  APP_URL?: string;
+  /** Secret. Signs newsletter unsubscribe and preference links (falls back to TOKEN_ENCRYPTION_KEY). */
+  NEWSLETTER_SIGNING_KEY?: string;
   /** Secret. Enables the assistant endpoints. */
   ANTHROPIC_API_KEY?: string;
 }

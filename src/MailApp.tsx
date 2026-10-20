@@ -32,6 +32,8 @@ import type { Documents } from './lib/documents';
 import type { Task, TaskInput, TasksApi } from './lib/tasksApi';
 import { toApprovalMessage } from './lib/approvalRun';
 import { TasksPage } from './components/tasks/TasksPage';
+import { NewslettersPage } from './components/newsletters/NewslettersPage';
+import type { NewslettersApi } from './lib/newslettersApi';
 import { CreateTaskDialog } from './components/tasks/CreateTaskDialog';
 import { DriveNotConnected } from './providers/gmail/driveAuth';
 import type { ReportBug } from './lib/diagnostics';
@@ -81,6 +83,8 @@ interface Props {
   documents?: Documents | null;
   /** Tasks & Approvals (backend). */
   tasks?: TasksApi | null;
+  /** Newsletters (backend). */
+  newsletters?: NewslettersApi | null;
 }
 
 interface ListState {
@@ -100,7 +104,7 @@ interface OpenOpts {
   draftId?: string;
 }
 
-export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach, documents, tasks }: Props) {
+export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, admin, onSwitchMailbox, reportBug, deliverability, sequences, notes, dismissals, contacts, shared, providerFor, onOpenShared, initialThread, outreach, documents, tasks, newsletters }: Props) {
   const dismissalStore = useMemo(() => dismissals || new LocalDismissals(), [dismissals]);
   const toast = useToast();
   const [boot, setBoot] = useState<{ account: Account; identities: Identity[]; mailboxes: Mailbox[]; categories: Category[] } | null>(null);
@@ -602,8 +606,11 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
                 else toast({ text: 'That email is in ' + m + '.', error: true });
               }} />
           )}
+          {view === 'newsletters' && (
+            <NewslettersPage api={newsletters || null} you={{ email: boot.account.email, name: boot.account.name }} canAssist={!!assistant.live} toast={toast} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents', 'tasks'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents', 'tasks', 'newsletters'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

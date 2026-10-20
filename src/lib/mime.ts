@@ -20,6 +20,8 @@ export interface MimeMessage {
   references?: string;
   date?: Date;
   boundarySeed?: string;
+  /** Extra headers, e.g. List-Unsubscribe. Line breaks are stripped. */
+  headers?: [string, string][];
 }
 
 const enc = new TextEncoder();
@@ -85,6 +87,7 @@ export function buildMime(m: MimeMessage): string {
   h.push('Subject: ' + encodeHeader(m.subject));
   h.push('Date: ' + (m.date ?? new Date()).toUTCString().replace('GMT', '+0000'));
   h.push('MIME-Version: 1.0');
+  for (const [k, v] of m.headers || []) if (/^[A-Za-z][\w-]*$/.test(k)) h.push(k + ': ' + v.replace(/[\r\n]+/g, ' '));
   if (m.inReplyTo) h.push('In-Reply-To: ' + m.inReplyTo);
   if (m.references || m.inReplyTo) h.push('References: ' + [m.references, m.inReplyTo].filter(Boolean).join(' '));
   if (m.priority === 'High') h.push('X-Priority: 1', 'Importance: high');
