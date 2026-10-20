@@ -21,6 +21,7 @@ import * as sequences from './sequences';
 import { connectSender, disconnectSender, senderStatus } from './senders';
 import * as newsletters from './newsletters';
 import * as newsletterPublic from './newsletterPublic';
+import * as testing from './testing';
 import { tokensReady } from './newsletterTokens';
 
 export type { Env };
@@ -124,6 +125,7 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
   if (path === '/api/bug-report' && method === 'POST') return json(await fileBugReport(env, user, await readJson(req)), 201);
 
   if (path === '/api/newsletters' || path.startsWith('/api/newsletters/')) return newsletters.route(req, env, user, url);
+  if (path.startsWith('/api/testing/')) return testing.route(req, env, user, url);
   if (path === '/api/tasks' || path.startsWith('/api/tasks/')) return tasks.route(req, env, user, url);
   if (path === '/api/approvals' || path.startsWith('/api/approvals/')) return approvals.route(req, env, user, url);
   if (path === '/api/snoozes') return snoozes.route(req, env, user, url);

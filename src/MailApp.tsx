@@ -33,6 +33,7 @@ import type { Task, TaskInput, TasksApi } from './lib/tasksApi';
 import { toApprovalMessage } from './lib/approvalRun';
 import { TasksPage } from './components/tasks/TasksPage';
 import { NewslettersPage } from './components/newsletters/NewslettersPage';
+import { ProductTestingPage } from './components/testing/ProductTestingPage';
 import type { NewslettersApi } from './lib/newslettersApi';
 import { CreateTaskDialog } from './components/tasks/CreateTaskDialog';
 import { DriveNotConnected } from './providers/gmail/driveAuth';
@@ -138,6 +139,15 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
   // ----- tasks: notifications count, tasks linked to the open conversation, the create dialog -----
   const superAdmin = role === 'super_admin';
   const [tasksUnseen, setTasksUnseen] = useState(0);
+  // Newsletters and testing emails waiting for approval, as the sidebar badge.
+  const [nlPending, setNlPending] = useState(0);
+  useEffect(() => {
+    if (!newsletters) return;
+    const f = () => newsletters.overview({ scope: 'review' }).then(r => setNlPending(r.issues.length)).catch(() => {});
+    f();
+    const t = setInterval(f, 300_000);
+    return () => clearInterval(t);
+  }, [newsletters, view]);
   const refreshTasks = useCallback(() => { tasks?.inbox().then(r => setTasksUnseen(r.unseen)).catch(() => {}); }, [tasks]);
   useEffect(() => {
     refreshTasks();
@@ -484,7 +494,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
         onReportBug={reportBug ? () => setBugOpen(true) : undefined}
       />
       <div className="body">
-        <Sidebar view={view} counts={{ ...counts, internal: internalUnread, tasks: tasksUnseen }} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
+        <Sidebar view={view} counts={{ ...counts, internal: internalUnread, tasks: tasksUnseen, newsletters: nlPending }} open={navOpen} hide={{ members: !admin && !demo }} onGo={go} onCompose={() => openCompose({})}
           footer={demo ? 'Signed in with your Axal VC account' : (provider.mailbox ? 'Shared mailbox · ' + provider.mailbox : 'Connected to Gmail · ' + boot.account.email) + (role && role !== 'member' ? ' · ' + ROLE_LABEL[role] : '')} />
         <main className={'main' + (selId ? ' has-sel' : '')} onClick={() => navOpen && setNavOpen(false)}>
           {isList && (
@@ -598,7 +608,7 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           )}
           {view === 'tasks' && (
             <TasksPage api={tasks || null} role={role || 'member'} provider={provider} profile={boot.account.profile} canSuggest={!!assistant.live}
-              initialTaskId={openTaskId}
+              initialTaskId={openTaskId} newsletters={newsletters || null}
               pendingSequences={pendingSequences} onOpenSequences={() => go('sequences')} onSeen={refreshTasks}
               onOpenSource={(m, id) => {
                 if (m === hereMailbox) go('inbox', id);
@@ -609,8 +619,11 @@ export function MailApp({ provider, assistant, signOutLabel, onSignOut, role, ad
           {view === 'newsletters' && (
             <NewslettersPage api={newsletters || null} you={{ email: boot.account.email, name: boot.account.name }} canAssist={!!assistant.live} toast={toast} />
           )}
+          {view === 'testing' && (
+            <ProductTestingPage api={newsletters || null} you={{ email: boot.account.email, name: boot.account.name }} canAssist={!!assistant.live} toast={toast} />
+          )}
           {view === 'sequences' && <Sequences api={sequences || null} profile={boot.account.profile} onBack={() => go('automations')} />}
-          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents', 'tasks', 'newsletters'].includes(view) && (
+          {!isList && !['bulk', 'admin', 'members', 'analytics', 'automations', 'sequences', 'internal', 'contacts', 'shared', 'documents', 'tasks', 'newsletters', 'testing'].includes(view) && (
             <section className="placeholder">
               <h1>{VIEW_TITLES[view]}</h1>
               <span className="muted">Not part of this build yet. This pass covers the mailbox, reader, composer, bulk email and signatures.</span>

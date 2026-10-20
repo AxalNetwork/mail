@@ -3,17 +3,17 @@ import type { FolderCounts } from '../providers/types';
 export type View =
   | 'inbox' | 'starred' | 'snoozed' | 'sent' | 'drafts' | 'scheduled' | 'all' | 'search'
   | 'bulk' | 'admin' | 'members' | 'sequences'
-  | 'shared' | 'internal' | 'contacts' | 'documents' | 'automations' | 'tasks' | 'analytics' | 'newsletters';
+  | 'shared' | 'internal' | 'contacts' | 'documents' | 'automations' | 'tasks' | 'analytics' | 'newsletters' | 'testing';
 
 export const VIEW_TITLES: Record<View, string> = {
   inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', sent: 'Sent', drafts: 'Drafts', scheduled: 'Scheduled', all: 'All Mail',
   search: 'Search', bulk: 'Bulk email', admin: 'Administration', members: 'Members & access', sequences: 'Outreach sequences', shared: 'Shared Inboxes', internal: 'Internal',
-  contacts: 'Contacts & Relationships', documents: 'Documents', automations: 'AI Automations', tasks: 'Tasks & Approvals', analytics: 'Analytics', newsletters: 'Newsletters'
+  contacts: 'Contacts & Relationships', documents: 'Documents', automations: 'AI Automations', tasks: 'Tasks & Approvals', analytics: 'Analytics', newsletters: 'Newsletters', testing: 'Product testing'
 };
 
 interface Props {
   view: View;
-  counts: FolderCounts & { internal?: number; tasks?: number };
+  counts: FolderCounts & { internal?: number; tasks?: number; newsletters?: number };
   open: boolean;
   hide: Partial<Record<View, boolean>>;
   footer: string;
@@ -49,9 +49,10 @@ export function Sidebar({ view, counts, open, hide, footer, onGo, onCompose }: P
         {item('contacts')}
         {item('documents')}
         {item('automations')}
+        {item('newsletters', counts.newsletters)}
+        {item('testing')}
         {item('tasks', counts.tasks)}
         {item('analytics')}
-        {item('newsletters')}
       </div>
       <div className="nav-group">
         <span className="mono-label">Organization</span>

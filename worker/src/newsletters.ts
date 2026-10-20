@@ -4,7 +4,8 @@ import { HttpError, json, readJson } from './http';
 import { SenderUnavailable, senderToken } from './senders';
 import { buildMime, base64Url } from '../../src/lib/mime';
 import { renderIssue, renderSystem, safeUrl } from '../../src/lib/newsletter/render';
-import { templateDef } from '../../src/lib/newsletter/templates';
+import { blockStrings, templateDef } from '../../src/lib/newsletter/templates';
+import * as link from './studioLink';
 import { blockUrls, cleanBlocks, isTemplate } from '../../src/lib/newsletter/validate';
 import type { Block, Brand, IssueContent, Recipient, TemplateId } from '../../src/lib/newsletter/types';
 import { manageLinks, sign, appUrl, tokensReady } from './newsletterTokens';
@@ -19,9 +20,12 @@ import { newsletterAssist } from './assistant';
  * - any member drafts issues and asks for review;
  * - admins and super admins edit any issue, manage subscribers, lists and
  *   settings, send tests, and schedule or send;
- * - an issue to a list that requires approval (investors and LPs) is approved
- *   by an admin other than the one who asked (a super admin may approve their
- *   own), for one version: any edit afterwards needs approval again.
+ * - every issue is approved by an admin other than the one who asked or edited
+ *   it last (a super admin may approve their own), for one version: any edit
+ *   afterwards needs approval again.
+ * Audiences are Mail's own lists and, over the StudioOS link, the lists,
+ * members and testers StudioOS keeps; StudioOS recipients are read when the
+ * issue starts sending, so anyone who left since is never sent to.
  * Nothing is sent automatically: an issue goes out only after a person
  * schedules it, and only to subscribers who opted in (double opt-in from the
  * website, an import with attested consent, or a person added by an admin).
@@ -48,21 +52,40 @@ async function sha256(s: string): Promise<string> {
 interface SettingsRow {
   postal_address: string; disclaimer: string; from_name: string; system_sender: string | null; system_from: string;
   double_opt_in: number; batch_size: number; allowed_origins: string; updated_by: string | null; updated_at: number;
+  daily_limit: number; per_minute: number; default_from: string; link_read_at: number | null; link_lists: number | null; link_programmes: number | null;
 }
 
 export async function getSettings(env: Env): Promise<SettingsRow> {
   const r = await env.DB.prepare('SELECT * FROM nl_settings WHERE id = 1').first<SettingsRow>();
-  return r || { postal_address: '', disclaimer: '', from_name: 'Axal VC', system_sender: null, system_from: '', double_opt_in: 1, batch_size: 40, allowed_origins: '["https://axal.vc","https://www.axal.vc"]', updated_by: null, updated_at: 0 };
+  return r || { postal_address: '', disclaimer: '', from_name: 'Axal VC', system_sender: null, system_from: '', double_opt_in: 1, batch_size: 40, allowed_origins: '["https://axal.vc","https://www.axal.vc"]', updated_by: null, updated_at: 0,
+    daily_limit: 400, per_minute: 20, default_from: '', link_read_at: null, link_lists: null, link_programmes: null };
 }
 
 export const brandOf = (s: SettingsRow): Brand => ({ fromName: s.from_name || 'Axal VC', postalAddress: s.postal_address, disclaimer: s.disclaimer });
 export const originsOf = (s: SettingsRow): string[] => { try { return (JSON.parse(s.allowed_origins) as string[]).filter(o => typeof o === 'string'); } catch { return []; } };
 
-const settingsOut = (s: SettingsRow, env: Env) => ({
+const dayStart = (now = Date.now()) => { const d = new Date(now); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+
+/** Newsletter messages accepted by Gmail since midnight UTC (the daily limit counts these). */
+async function sentToday(env: Env, now = Date.now()) {
+  const a = await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_sends WHERE status = 'sent' AND sent_at >= ?1").bind(dayStart(now)).first<{ n: number }>();
+  const b = await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_ext_sends WHERE status = 'sent' AND sent_at >= ?1").bind(dayStart(now)).first<{ n: number }>();
+  return (a?.n || 0) + (b?.n || 0);
+}
+
+/** Record a successful read over the StudioOS link, for the settings page. */
+export async function noteLinkRead(env: Env, change: { lists?: number; programmes?: number }) {
+  await env.DB.prepare('UPDATE nl_settings SET link_read_at = ?1, link_lists = COALESCE(?2, link_lists), link_programmes = COALESCE(?3, link_programmes) WHERE id = 1')
+    .bind(Date.now(), change.lists ?? null, change.programmes ?? null).run().catch(() => {});
+}
+
+const settingsOut = async (s: SettingsRow, env: Env) => ({
   postalAddress: s.postal_address, disclaimer: s.disclaimer, fromName: s.from_name, systemSender: s.system_sender, systemFrom: s.system_from,
   doubleOptIn: !!s.double_opt_in, batchSize: s.batch_size, allowedOrigins: originsOf(s), updatedBy: s.updated_by, updatedAt: s.updated_at,
   signupEndpoint: appUrl(env) + '/api/public/newsletter/subscribe', embedScript: appUrl(env) + '/api/public/newsletter/embed.js',
-  linksReady: tokensReady(env)
+  linksReady: tokensReady(env),
+  dailyLimit: s.daily_limit, perMinute: s.per_minute, defaultFrom: s.default_from, sentToday: await sentToday(env),
+  link: { configured: link.linkConfigured(env), base: link.studioBase(env), readAt: s.link_read_at, lists: s.link_lists, programmes: s.link_programmes }
 });
 
 async function putSettings(env: Env, user: User, b: Record<string, unknown>) {
@@ -86,11 +109,15 @@ async function putSettings(env: Env, user: User, b: Record<string, unknown>) {
     }
   }
   const batch = b.batchSize === undefined ? cur.batch_size : Math.max(5, Math.min(200, Math.floor(Number(b.batchSize)) || 40));
+  const daily = b.dailyLimit === undefined ? cur.daily_limit : Math.max(1, Math.min(10000, Math.floor(Number(b.dailyLimit)) || 400));
+  const perMinute = b.perMinute === undefined ? cur.per_minute : Math.max(1, Math.min(60, Math.floor(Number(b.perMinute)) || 20));
+  const defaultFrom = b.defaultFrom === undefined ? cur.default_from : str(b.defaultFrom, 254).toLowerCase();
+  if (defaultFrom && !EMAIL_RE.test(defaultFrom)) throw new HttpError(400, 'The sending address is not an email address.');
   await env.DB.prepare(`UPDATE nl_settings SET postal_address = ?1, disclaimer = ?2, from_name = ?3, system_sender = ?4, system_from = ?5, double_opt_in = ?6, batch_size = ?7,
-    allowed_origins = ?8, updated_by = ?9, updated_at = ?10 WHERE id = 1`)
+    allowed_origins = ?8, updated_by = ?9, updated_at = ?10, daily_limit = ?11, per_minute = ?12, default_from = ?13 WHERE id = 1`)
     .bind(b.postalAddress === undefined ? cur.postal_address : str(b.postalAddress, 300), b.disclaimer === undefined ? cur.disclaimer : str(b.disclaimer, 1500),
       b.fromName === undefined ? cur.from_name : str(b.fromName, 80) || 'Axal VC', sender, systemFrom,
-      b.doubleOptIn === undefined ? cur.double_opt_in : b.doubleOptIn === false ? 0 : 1, batch, JSON.stringify(clean), user.memberEmail, Date.now()).run();
+      b.doubleOptIn === undefined ? cur.double_opt_in : b.doubleOptIn === false ? 0 : 1, batch, JSON.stringify(clean), user.memberEmail, Date.now(), daily, perMinute, defaultFrom).run();
   return settingsOut(await getSettings(env), env);
 }
 
@@ -154,36 +181,46 @@ interface IssueRow {
   from_email: string; from_name: string; signoff: string; status: string; version: number; content_hash: string; review_requested_by: string | null;
   approved_hash: string | null; approved_by: string | null; approved_at: number | null; sender_member: string | null; scheduled_at: number | null;
   started_at: number | null; sent_at: number | null; recipients: number; last_error: string | null; created_by: string; updated_by: string; created_at: number; updated_at: number;
+  audiences: string; programme_uid: string | null; variant: string;
 }
+
+const AUDIENCE_KEY = /^[\w:.-]{1,120}$/;
+const audiencesOf = (r: Pick<IssueRow, 'audiences'>): string[] => { try { return (JSON.parse(r.audiences || '[]') as string[]).filter(k => typeof k === 'string' && AUDIENCE_KEY.test(k)); } catch { return []; } };
+const approvedNow = (r: IssueRow) => !!r.approved_hash && r.approved_hash === r.content_hash;
 
 const contentOf = (r: IssueRow): IssueContent => ({ template: r.template, subject: r.subject, preheader: r.preheader, blocks: JSON.parse(r.blocks) as Block[] });
 const signoffOf = (r: IssueRow): { title: string; calendarUrl: string } => { try { return { title: '', calendarUrl: '', ...JSON.parse(r.signoff) }; } catch { return { title: '', calendarUrl: '' }; } };
 
-const hashOf = (r: Pick<IssueRow, 'template' | 'subject' | 'preheader' | 'edition' | 'blocks' | 'list_ids' | 'from_email' | 'from_name' | 'signoff'>) =>
-  sha256(JSON.stringify([r.template, r.subject, r.preheader, r.edition, r.blocks, r.list_ids, r.from_email, r.from_name, r.signoff]));
+const hashOf = (r: Pick<IssueRow, 'template' | 'subject' | 'preheader' | 'edition' | 'blocks' | 'list_ids' | 'from_email' | 'from_name' | 'signoff' | 'audiences'>) =>
+  sha256(JSON.stringify([r.template, r.subject, r.preheader, r.edition, r.blocks, r.list_ids, r.from_email, r.from_name, r.signoff, r.audiences === '[]' ? '' : r.audiences]));
 
 async function issueOut(env: Env, user: User, r: IssueRow, detail = false) {
   const ids = JSON.parse(r.list_ids) as number[];
-  const approval = await needsApproval(env, ids);
-  const counts = (await env.DB.prepare('SELECT status, COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1 GROUP BY status').bind(r.id).all<{ status: string; n: number }>()).results;
-  const c = (k: string) => counts.find(x => x.status === k)?.n || 0;
+  const auds = audiencesOf(r);
+  const counts = (await env.DB.prepare(`SELECT status, (error LIKE 'Unconfirmed%') AS unc, COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1 GROUP BY status, unc
+    UNION ALL SELECT status, 0 AS unc, COUNT(*) AS n FROM nl_ext_sends WHERE issue_id = ?1 GROUP BY status`).bind(r.id).all<{ status: string; unc: number; n: number }>()).results;
+  const c = (k: string) => counts.filter(x => x.status === k && !(k === 'failed' && x.unc)).reduce((a, x) => a + x.n, 0);
+  const unconfirmed = counts.filter(x => x.status === 'unconfirmed' || (x.status === 'failed' && x.unc)).reduce((a, x) => a + x.n, 0);
+  const approved = approvedNow(r);
+  const canManage = isManager(user);
   const mine = r.created_by === user.memberEmail;
   const base = {
-    id: r.id, title: r.title, template: r.template, subject: r.subject, preheader: r.preheader, edition: r.edition, listIds: ids,
+    id: r.id, title: r.title, template: r.template, subject: r.subject, preheader: r.preheader, edition: r.edition, listIds: ids, audiences: auds,
+    programmeUid: r.programme_uid, variant: r.variant,
     fromEmail: r.from_email, fromName: r.from_name, signoff: signoffOf(r), status: r.status, version: r.version, contentHash: r.content_hash,
-    approvalRequired: approval, approved: !!r.approved_hash && r.approved_hash === r.content_hash, approvedBy: r.approved_by, approvedAt: r.approved_at,
+    approvalRequired: true, approved, approvedBy: r.approved_by, approvedAt: r.approved_at,
     reviewRequestedBy: r.review_requested_by, senderMember: r.sender_member, scheduledAt: r.scheduled_at, startedAt: r.started_at, sentAt: r.sent_at,
-    recipients: r.recipients, sent: c('sent'), failed: c('failed'), queued: c('queued') + c('sending'), skipped: c('skipped'), lastError: r.last_error,
+    recipients: r.recipients, sent: c('sent'), failed: c('failed'), unconfirmed, queued: c('queued') + c('sending'), skipped: c('skipped'), lastError: r.last_error,
     createdBy: r.created_by, updatedBy: r.updated_by, createdAt: r.created_at, updatedAt: r.updated_at,
     canEdit: (isManager(user) || (mine && ['draft', 'in_review'].includes(r.status))) && !['scheduled', 'sending', 'sent'].includes(r.status),
-    canApprove: isManager(user) && r.status === 'in_review' && approval &&
+    canApprove: canManage && r.status === 'in_review' &&
       ((r.review_requested_by !== user.memberEmail && r.updated_by !== user.memberEmail) || user.role === 'super_admin'),
-    canSchedule: isManager(user) && ['draft', 'in_review', 'approved'].includes(r.status) && (!approval || r.approved_hash === r.content_hash)
+    canSchedule: canManage && r.status === 'approved' && approved
   };
   if (!detail) return base;
   return {
     ...base, blocks: JSON.parse(r.blocks) as Block[],
-    audience: await audience(env, ids, r.template), excluded: await excluded(env, ids),
+    audience: await audience(env, ids, r.template), excluded: await excluded(env, ids), dailyLimit: (await getSettings(env)).daily_limit,
     unsubscribes: ((await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_events WHERE issue_id = ?1 AND kind = 'unsubscribe'").bind(r.id).first<{ n: number }>())?.n || 0)
   };
 }
@@ -198,20 +235,31 @@ async function event(env: Env, kind: string, detail: string, issueId: number | n
   await env.DB.prepare('INSERT INTO nl_events (subscriber_id, issue_id, kind, detail, at) VALUES (?1, ?2, ?3, ?4, ?5)').bind(subscriberId, issueId, kind, detail.slice(0, 500), Date.now()).run();
 }
 
-async function create(env: Env, user: User, b: { template?: unknown; title?: unknown }) {
+async function create(env: Env, user: User, b: { template?: unknown; title?: unknown; variant?: unknown; programmeUid?: unknown; programmeName?: unknown }) {
   if (!isTemplate(b.template)) throw new HttpError(400, 'Choose a template');
   const def = templateDef(b.template);
+  const programme = str(b.programmeUid, 80);
+  if (def.testing && !/^[\w-]{1,80}$/.test(programme)) throw new HttpError(400, 'Testing emails start from a programme in Product testing.');
+  if (!def.testing && programme) throw new HttpError(400, 'Only testing emails belong to a programme.');
+  const variant = b.variant === 'online' && def.variants?.online ? 'online' : '';
   const all = (await env.DB.prepare('SELECT id, key FROM nl_lists').all<{ id: number; key: string }>()).results;
   const ids = def.lists.map(k => all.find(l => l.key === k)?.id).filter((x): x is number => !!x);
+  // Testing emails go to the programme's picked testers (StudioOS), except "Not this time".
+  const auds = def.testing && b.template !== 'pt_not' ? ['testers:' + programme] : [];
+  const product = str(b.programmeName, 120);
+  let blocks = JSON.stringify((variant ? def.variants!.online : def.blocks)());
+  let subject = def.subject;
+  if (product) { blocks = blocks.split('[Product name]').join(product.replace(/[\\"]/g, '')); subject = subject.split('[Product name]').join(product); }
   const now = Date.now();
   const row = {
-    template: def.id, subject: def.subject, preheader: def.preheader, edition: '', blocks: JSON.stringify(def.blocks()), list_ids: JSON.stringify(ids),
-    from_email: '', from_name: '', signoff: '{}'
+    template: def.id, subject, preheader: def.preheader, edition: '', blocks, list_ids: JSON.stringify(ids),
+    from_email: (await getSettings(env)).default_from || '', from_name: '', signoff: '{}', audiences: JSON.stringify(auds)
   };
   const hash = await hashOf(row);
-  const r = await env.DB.prepare(`INSERT INTO nl_issues (title, template, subject, preheader, edition, blocks, list_ids, from_email, from_name, signoff, content_hash, created_by, updated_by, created_at, updated_at)
-    VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, '', '', '{}', ?7, ?8, ?8, ?9, ?9)`)
-    .bind(str(b.title, 120) || def.name, def.id, def.subject, def.preheader, row.blocks, row.list_ids, hash, user.memberEmail, now).run();
+  const r = await env.DB.prepare(`INSERT INTO nl_issues (title, template, subject, preheader, edition, blocks, list_ids, from_email, from_name, signoff, content_hash, created_by, updated_by, created_at, updated_at, audiences, programme_uid, variant)
+    VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?13, '', '{}', ?7, ?8, ?8, ?9, ?9, ?10, ?11, ?12)`)
+    .bind(str(b.title, 120) || (def.testing && product ? def.name + ' · ' + product : def.name + (variant ? ' · Online' : '')), def.id, subject, def.preheader, row.blocks, row.list_ids, hash, user.memberEmail, now,
+      row.audiences, programme || null, variant, row.from_email).run();
   return issueOut(env, user, await load(env, Number(r.meta.last_row_id)), true);
 }
 
@@ -228,7 +276,8 @@ async function update(env: Env, user: User, r: IssueRow, b: Record<string, unkno
     list_ids: b.listIds === undefined ? r.list_ids : JSON.stringify(await listIds(env, b.listIds)),
     from_email: b.fromEmail === undefined ? r.from_email : str(b.fromEmail, 254).toLowerCase(),
     from_name: b.fromName === undefined ? r.from_name : str(b.fromName, 80),
-    signoff: b.signoff === undefined ? r.signoff : JSON.stringify({ title: str((b.signoff as Record<string, unknown>)?.title, 100), calendarUrl: safeUrl(str((b.signoff as Record<string, unknown>)?.calendarUrl, 600)) })
+    signoff: b.signoff === undefined ? r.signoff : JSON.stringify({ title: str((b.signoff as Record<string, unknown>)?.title, 100), calendarUrl: safeUrl(str((b.signoff as Record<string, unknown>)?.calendarUrl, 600)) }),
+    audiences: b.audiences === undefined ? r.audiences : JSON.stringify(audienceKeys(b.audiences))
   };
   if (next.from_email && !EMAIL_RE.test(next.from_email)) throw new HttpError(400, 'The From address is not an email address.');
   const title = b.title === undefined ? r.title : str(b.title, 120) || r.title;
@@ -238,10 +287,17 @@ async function update(env: Env, user: User, r: IssueRow, b: Record<string, unkno
   const status = changed && ['in_review', 'approved'].includes(r.status) ? 'draft' : r.status;
   await env.DB.prepare(`UPDATE nl_issues SET title = ?2, subject = ?3, preheader = ?4, edition = ?5, blocks = ?6, list_ids = ?7, from_email = ?8, from_name = ?9, signoff = ?10,
     content_hash = ?11, version = version + 1, status = ?12, review_requested_by = CASE WHEN ?12 = 'draft' THEN NULL ELSE review_requested_by END,
-    last_error = CASE WHEN ?13 THEN ?14 ELSE last_error END, updated_by = ?15, updated_at = ?16 WHERE id = ?1 AND version = ?17`)
+    last_error = CASE WHEN ?13 THEN ?14 ELSE last_error END, updated_by = ?15, updated_at = ?16, audiences = ?18 WHERE id = ?1 AND version = ?17`)
     .bind(r.id, title, next.subject, next.preheader, next.edition, next.blocks, next.list_ids, next.from_email, next.from_name, next.signoff, hash, status,
-      status !== r.status ? 1 : 0, r.status === 'approved' ? 'Changed after approval: it needs approval again.' : 'Changed during review: ask for review again.', user.memberEmail, Date.now(), r.version).run();
+      status !== r.status ? 1 : 0, r.status === 'approved' ? 'Changed after approval: it needs approval again.' : 'Changed during review: ask for review again.', user.memberEmail, Date.now(), r.version, next.audiences).run();
   return issueOut(env, user, await load(env, r.id), true);
+}
+
+function audienceKeys(v: unknown): string[] {
+  if (!Array.isArray(v)) throw new HttpError(400, 'audiences must be a list');
+  const keys = [...new Set(v.map(x => String(x)))].slice(0, 20);
+  if (keys.some(k => !AUDIENCE_KEY.test(k))) throw new HttpError(400, 'Unknown audience');
+  return keys;
 }
 
 function stale(r: IssueRow, b: { version?: unknown; contentHash?: unknown }) {
@@ -252,27 +308,28 @@ function stale(r: IssueRow, b: { version?: unknown; contentHash?: unknown }) {
 async function blockers(env: Env, r: IssueRow): Promise<string[]> {
   const s = await getSettings(env);
   const content = contentOf(r);
+  content.blocks = content.blocks.filter(b => !b.hidden);
   const ids = JSON.parse(r.list_ids) as number[];
+  const auds = audiencesOf(r);
   const out: string[] = [];
   if (!r.subject.trim()) out.push('Add a subject.');
-  if (!ids.length) out.push('Choose an audience.');
-  else if (!(await audience(env, ids, r.template))) out.push('Nobody on these lists is subscribed yet.');
+  if (!ids.length && !auds.length) out.push(r.template === 'pt_not' ? 'StudioOS doesn’t share the applicants who weren’t picked yet, so this email has no audience. StudioOS tells them in the app.' : 'Choose an audience.');
+  else if (!auds.length && !(await audience(env, ids, r.template))) out.push('Nobody on these lists is subscribed yet.');
+  if (auds.length && !link.linkConfigured(env)) out.push('Connect StudioOS (the link secret) to send to its lists.');
   if (!s.postal_address.trim()) out.push('Add the firm’s postal address in Newsletters → Settings (required in every newsletter).');
-  if (await needsApproval(env, ids) && !s.disclaimer.trim()) out.push('Add the disclaimer in Settings: it is required for investor and LP audiences.');
+  if ((await needsApproval(env, ids) || r.template === 'letter' || auds.some(k => /^(lp|lps|investors)\b/.test(k))) && !s.disclaimer.trim()) out.push('Add the disclaimer in Settings: it is required for investor and LP audiences.');
   if (!tokensReady(env)) out.push('The Worker needs the NEWSLETTER_SIGNING_KEY secret for unsubscribe links.');
   const bad = blockUrls(content.blocks).filter(u => !safeUrl(u.url) && !/^\{[a-z_]+\}$/.test(u.url));
   if (bad.length) out.push('Fix ' + bad.length + ' link' + (bad.length > 1 ? 's' : '') + ' (https:// only): ' + bad.slice(0, 3).map(b => b.where).join(', ') + '.');
   if (content.blocks.some(b => b.type === 'image' && b.src.trim() && !b.alt.trim())) out.push('Give every image alt text.');
-  if (/\[[^\]\n]{2,60}\](?!\()/.test(r.subject + r.preheader + r.blocks)) out.push('Replace the [placeholder] text.');
+  if (/\[[^\]\n]{2,60}\](?!\()/.test([r.subject, r.preheader, ...blockStrings(content.blocks)].join('\n'))) out.push('Replace the [placeholder] text.');
   return out;
 }
 
 async function schedule(env: Env, user: User, r: IssueRow, b: { version?: unknown; contentHash?: unknown; at?: unknown }) {
   requireManager(user);
   stale(r, b);
-  if (!['draft', 'in_review', 'approved'].includes(r.status)) throw new HttpError(409, 'This newsletter is ' + r.status + '.', 'not_schedulable');
-  const ids = JSON.parse(r.list_ids) as number[];
-  if (await needsApproval(env, ids) && r.approved_hash !== r.content_hash) throw new HttpError(409, 'Investor and LP newsletters need an admin’s approval of this version first.', 'needs_approval');
+  if (r.status !== 'approved' || !approvedNow(r)) throw new HttpError(409, 'Nothing is sent without an approved version. Ask for approval first.', 'needs_approval');
   const problems = await blockers(env, r);
   if (problems.length) throw new HttpError(400, problems.join(' '), 'checks_failed', { problems });
   let sender: { token: string; email: string };
@@ -283,7 +340,7 @@ async function schedule(env: Env, user: User, r: IssueRow, b: { version?: unknow
   const at = b.at === undefined || b.at === null ? Date.now() : Number(b.at);
   if (!Number.isFinite(at) || at < Date.now() - 60_000 || at > Date.now() + 366 * 86_400_000) throw new HttpError(400, 'Choose a time in the coming year.');
   const res = await env.DB.prepare(`UPDATE nl_issues SET status = 'scheduled', scheduled_at = ?2, sender_member = ?3, last_error = NULL, updated_at = ?4
-    WHERE id = ?1 AND version = ?5 AND content_hash = ?6 AND status IN ('draft', 'in_review', 'approved')`).bind(r.id, at, user.memberEmail, Date.now(), r.version, r.content_hash).run();
+    WHERE id = ?1 AND version = ?5 AND content_hash = ?6 AND status = 'approved' AND approved_hash = content_hash`).bind(r.id, at, user.memberEmail, Date.now(), r.version, r.content_hash).run();
   if (!res.meta.changes) throw new HttpError(409, 'This newsletter changed since you opened it. Review the current version.', 'issue_changed');
   return issueOut(env, user, await load(env, r.id), true);
 }
@@ -311,9 +368,56 @@ async function sendTest(env: Env, user: User, r: IssueRow) {
   return { ok: true, to: user.memberEmail };
 }
 
-async function report(env: Env, r: IssueRow) {
-  const failures = (await env.DB.prepare("SELECT email, error FROM nl_sends WHERE issue_id = ?1 AND status = 'failed' ORDER BY email LIMIT 200").bind(r.id).all<{ email: string; error: string }>()).results;
-  return { failures };
+/** Each recipient of an issue and what happened, for the sent page. `q` searches name and email; `status` filters. */
+async function report(env: Env, r: IssueRow, q: URLSearchParams) {
+  const rows = (await env.DB.prepare(`SELECT n.email, s.first_name, s.last_name, n.status, n.error, n.sent_at,
+      EXISTS (SELECT 1 FROM nl_events e WHERE e.issue_id = n.issue_id AND e.subscriber_id = n.subscriber_id AND e.kind = 'unsubscribe') AS unsub
+      FROM nl_sends n LEFT JOIN nl_subscribers s ON s.id = n.subscriber_id WHERE n.issue_id = ?1
+    UNION ALL SELECT email, first_name, last_name, status, error, sent_at, 0 AS unsub FROM nl_ext_sends WHERE issue_id = ?1`).bind(r.id)
+    .all<{ email: string; first_name: string | null; last_name: string | null; status: string; error: string | null; sent_at: number | null; unsub: number }>()).results;
+  const label = (x: (typeof rows)[number]) =>
+    x.unsub ? 'unsubscribed' : x.status === 'sent' ? 'accepted' : x.status === 'unconfirmed' || (x.status === 'failed' && (x.error || '').startsWith('Unconfirmed')) ? 'unconfirmed'
+      : x.status === 'failed' ? 'failed' : x.status === 'skipped' ? 'skipped' : 'queued';
+  const all = rows.map(x => ({
+    name: [x.first_name, x.last_name].filter(Boolean).join(' '), email: x.email || 'deleted subscriber', status: label(x), time: x.sent_at,
+    detail: label(x) === 'unsubscribed' ? 'Unsubscribed from this issue' : (x.error || '').replace(/^Unconfirmed: /, '')
+  }));
+  const figures = {
+    recipients: all.length, accepted: all.filter(x => x.status === 'accepted' || x.status === 'unsubscribed').length, failed: all.filter(x => x.status === 'failed').length,
+    unconfirmed: all.filter(x => x.status === 'unconfirmed').length, skipped: all.filter(x => x.status === 'skipped').length, queued: all.filter(x => x.status === 'queued').length,
+    unsubscribes: all.filter(x => x.status === 'unsubscribed').length,
+    // Replies and bounce notices aren't read from the sending mailbox yet.
+    replies: null as number | null, bounces: null as number | null
+  };
+  const text = (q.get('q') || '').trim().toLowerCase();
+  const st = q.get('status') || '';
+  const shown = all.filter(x => (!st || x.status === st) && (!text || x.email.toLowerCase().includes(text) || x.name.toLowerCase().includes(text)));
+  return { figures, total: shown.length, recipients: shown.slice(0, 500) };
+}
+
+/** Addresses the member's sending grant can send as (Gmail "Send mail as"), for the From choice. */
+async function senders(env: Env, user: User) {
+  let sender: { token: string; email: string };
+  try { sender = await senderToken(env, user.memberEmail); } catch (e) {
+    return { connected: false, error: e instanceof Error ? e.message : String(e), addresses: [] as { email: string; name: string; primary: boolean }[] };
+  }
+  const r = await fetch(GMAIL + '/settings/sendAs', { headers: { Authorization: 'Bearer ' + sender.token } });
+  const list = r.ok ? (((await r.json()) as { sendAs?: { sendAsEmail: string; displayName?: string; verificationStatus?: string; isPrimary?: boolean }[] }).sendAs || []) : [];
+  const addresses = list.filter(a => a.isPrimary || a.verificationStatus === 'accepted').map(a => ({ email: a.sendAsEmail.toLowerCase(), name: a.displayName || '', primary: !!a.isPrimary }));
+  if (!addresses.length) addresses.push({ email: sender.email, name: '', primary: true });
+  return { connected: true, error: null, addresses };
+}
+
+/** StudioOS lists with their counts, for the audience step. */
+async function linkAudiences(env: Env) {
+  if (!link.linkConfigured(env)) return { configured: false, error: null, audiences: [] as link.Audience[] };
+  try {
+    const audiences = await link.audiences(env);
+    await noteLinkRead(env, { lists: audiences.length });
+    return { configured: true, error: null, audiences };
+  } catch (e) {
+    return { configured: true, error: e instanceof Error ? e.message : String(e), audiences: [] as link.Audience[] };
+  }
 }
 
 // ---------- subscribers ----------
@@ -463,13 +567,44 @@ async function gmailSend(sender: { token: string }, raw: string): Promise<string
   return ((await res.json()) as { id: string }).id;
 }
 
-export interface NewsletterRun { confirmations: number; sent: number; failed: number; started: number; finished: number; paused: number }
+export interface NewsletterRun { confirmations: number; sent: number; failed: number; unconfirmed: number; started: number; finished: number; paused: number; limited: boolean }
 
-/** Cron: queued confirmations, then due issues, at most the batch size of messages per run. Safe to run twice. */
+interface Target {
+  table: 'nl_sends' | 'nl_ext_sends';
+  /** The row's key after issue_id: subscriber_id or email. */
+  key: number | string;
+  email: string; first_name: string; last_name: string; company: string;
+  unsubscribeUrl: string; preferencesUrl: string; viewUrl: string; oneClick: string;
+  subscribed: boolean;
+}
+
+const keyCol = (t: Target['table']) => (t === 'nl_sends' ? 'subscriber_id' : 'email');
+
+/** Read StudioOS recipients for an issue's audiences into nl_ext_sends (once, when it starts). */
+async function materializeLink(env: Env, r: IssueRow) {
+  const auds = audiencesOf(r);
+  let total = 0;
+  for (const key of auds) {
+    const people = await link.recipients(env, key);
+    total += people.length;
+    for (const p of people) {
+      await env.DB.prepare(`INSERT OR IGNORE INTO nl_ext_sends (issue_id, email, audience, first_name, last_name, company, unsubscribe_url, preferences_url, one_click_url, status)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'queued'
+        WHERE NOT EXISTS (SELECT 1 FROM nl_sends n WHERE n.issue_id = ?1 AND n.email = ?2 COLLATE NOCASE)
+        AND NOT EXISTS (SELECT 1 FROM opt_outs o WHERE o.email = ?2 COLLATE NOCASE)`)
+        .bind(r.id, p.email, key, p.first_name, p.last_name, p.company, safeUrl(p.unsubscribe_url), safeUrl(p.preferences_url), safeUrl(p.one_click_url)).run();
+    }
+  }
+  if (auds.length) await noteLinkRead(env, {});
+  return total;
+}
+
+/** Cron: queued confirmations, then due issues, within the batch size, the per-minute throttle and the daily limit. Safe to run twice. */
 export async function runNewsletters(env: Env, now = Date.now()): Promise<NewsletterRun> {
-  const out: NewsletterRun = { confirmations: 0, sent: 0, failed: 0, started: 0, finished: 0, paused: 0 };
+  const out: NewsletterRun = { confirmations: 0, sent: 0, failed: 0, unconfirmed: 0, started: 0, finished: 0, paused: 0, limited: false };
   const s = await getSettings(env);
-  let budget = s.batch_size;
+  // The cron runs every 10 minutes; the throttle spreads a run's messages over those minutes' worth.
+  let budget = Math.min(s.batch_size, s.per_minute * 10);
 
   // Confirmation emails that couldn't be sent at signup (or were requested on import).
   if (s.system_sender && tokensReady(env)) {
@@ -487,83 +622,129 @@ export async function runNewsletters(env: Env, now = Date.now()): Promise<Newsle
   // Start scheduled issues whose time has come: fix the recipient list now.
   const due = (await env.DB.prepare("SELECT * FROM nl_issues WHERE status = 'scheduled' AND scheduled_at <= ?1 ORDER BY scheduled_at").bind(now).all<IssueRow>()).results;
   for (const r of due) {
-    const ids = JSON.parse(r.list_ids) as number[];
-    if (await needsApproval(env, ids) && r.approved_hash !== r.content_hash) {
+    if (!approvedNow(r)) {
       await env.DB.prepare("UPDATE nl_issues SET status = 'paused', last_error = 'Not approved as it is now.' WHERE id = ?1").bind(r.id).run();
       out.paused++;
       continue;
     }
-    await env.DB.prepare(`INSERT OR IGNORE INTO nl_sends (issue_id, subscriber_id, email, status)
-      SELECT DISTINCT ?1, s.id, s.email, 'queued' FROM nl_subscribers s JOIN nl_memberships m ON m.subscriber_id = s.id
-      WHERE s.status = 'subscribed' AND m.list_id IN (${ids.map(() => '?').join(',') || 'NULL'}) AND (s.frequency = 'all' OR ?${ids.length + 2} = 1)
-      AND NOT EXISTS (SELECT 1 FROM opt_outs o WHERE o.email = s.email COLLATE NOCASE)`).bind(r.id, ...ids, ESSENTIALS.includes(r.template) ? 1 : 0).run();
-    const n = (await env.DB.prepare('SELECT COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1').bind(r.id).first<{ n: number }>())?.n || 0;
-    await env.DB.prepare("UPDATE nl_issues SET status = 'sending', started_at = ?2, recipients = ?3 WHERE id = ?1 AND status = 'scheduled'").bind(r.id, now, n).run();
+    const ids = JSON.parse(r.list_ids) as number[];
+    if (ids.length) {
+      await env.DB.prepare(`INSERT OR IGNORE INTO nl_sends (issue_id, subscriber_id, email, status)
+        SELECT DISTINCT ?1, s.id, s.email, 'queued' FROM nl_subscribers s JOIN nl_memberships m ON m.subscriber_id = s.id
+        WHERE s.status = 'subscribed' AND m.list_id IN (${ids.map(() => '?').join(',')}) AND (s.frequency = 'all' OR ?${ids.length + 2} = 1)
+        AND NOT EXISTS (SELECT 1 FROM opt_outs o WHERE o.email = s.email COLLATE NOCASE)`).bind(r.id, ...ids, ESSENTIALS.includes(r.template) ? 1 : 0).run();
+    }
+    try { await materializeLink(env, r); } catch (e) {
+      // StudioOS didn't answer: wait, rather than send to only part of the audience.
+      await env.DB.prepare('DELETE FROM nl_ext_sends WHERE issue_id = ?1').bind(r.id).run();
+      await env.DB.prepare('UPDATE nl_issues SET last_error = ?2 WHERE id = ?1').bind(r.id, 'Waiting for StudioOS: ' + (e instanceof Error ? e.message : String(e)).slice(0, 200) + ' Sending starts when the lists can be read.').run();
+      continue;
+    }
+    const n = ((await env.DB.prepare('SELECT COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1').bind(r.id).first<{ n: number }>())?.n || 0)
+      + ((await env.DB.prepare('SELECT COUNT(*) AS n FROM nl_ext_sends WHERE issue_id = ?1').bind(r.id).first<{ n: number }>())?.n || 0);
+    await env.DB.prepare("UPDATE nl_issues SET status = 'sending', started_at = ?2, recipients = ?3, last_error = NULL WHERE id = ?1 AND status = 'scheduled'").bind(r.id, now, n).run();
     out.started++;
   }
+
+  // The daily limit: what's left of today's allowance.
+  const left = Math.max(0, s.daily_limit - (await sentToday(env, now)));
+  if (left < budget) { budget = left; }
 
   // Send from issues in progress, oldest first, within the budget.
   const sending = (await env.DB.prepare("SELECT * FROM nl_issues WHERE status = 'sending' ORDER BY started_at").all<IssueRow>()).results;
   for (const r of sending) {
-    if (budget <= 0) break;
+    // A claim left by a run that died mid-send may have gone out: unconfirmed, never resent.
+    await env.DB.prepare("UPDATE nl_sends SET status = 'failed', error = 'Unconfirmed: interrupted while sending. Check Sent mail.' WHERE issue_id = ?1 AND status = 'sending' AND sent_at < ?2").bind(r.id, now - STUCK_MS).run();
+    await env.DB.prepare("UPDATE nl_ext_sends SET status = 'unconfirmed', error = 'Interrupted while sending. Check Sent mail.' WHERE issue_id = ?1 AND status = 'sending' AND sent_at < ?2").bind(r.id, now - STUCK_MS).run();
+    if (budget <= 0) {
+      const done = ((await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1 AND status != 'queued'").bind(r.id).first<{ n: number }>())?.n || 0)
+        + ((await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_ext_sends WHERE issue_id = ?1 AND status != 'queued'").bind(r.id).first<{ n: number }>())?.n || 0);
+      if (left <= 0) {
+        out.limited = true;
+        await env.DB.prepare('UPDATE nl_issues SET last_error = ?2 WHERE id = ?1').bind(r.id,
+          'Paused at ' + done + ' of ' + r.recipients + '. Resumes tomorrow at 00:00 UTC. The daily limit for ' + (r.from_email || 'the sending address') + ' was reached. Nobody gets the email twice.').run();
+      }
+      continue;
+    }
     let sender: { token: string; email: string };
     try { sender = await senderToken(env, r.sender_member || ''); } catch (e) {
       await env.DB.prepare("UPDATE nl_issues SET status = 'paused', last_error = ?2 WHERE id = ?1").bind(r.id, (e instanceof Error ? e.message : String(e)).slice(0, 400)).run();
       out.paused++;
       continue;
     }
-    // A claim left by a run that died mid-send may have gone out: marked failed, never resent.
-    await env.DB.prepare("UPDATE nl_sends SET status = 'failed', error = 'Interrupted while sending; not retried' WHERE issue_id = ?1 AND status = 'sending' AND sent_at < ?2")
-      .bind(r.id, now - STUCK_MS).run();
+    if (r.last_error?.startsWith('Paused at ')) await env.DB.prepare('UPDATE nl_issues SET last_error = NULL WHERE id = ?1').bind(r.id).run();
     const content = contentOf(r);
     const so = signoffOf(r);
     const brand = brandOf(s);
-    const batch = (await env.DB.prepare(`SELECT n.subscriber_id, s.email, s.first_name, s.last_name, s.company, s.status FROM nl_sends n JOIN nl_subscribers s ON s.id = n.subscriber_id
+
+    const local = (await env.DB.prepare(`SELECT n.subscriber_id, s.email, s.first_name, s.last_name, s.company, s.status FROM nl_sends n JOIN nl_subscribers s ON s.id = n.subscriber_id
       WHERE n.issue_id = ?1 AND n.status = 'queued' LIMIT ?2`).bind(r.id, budget).all<{ subscriber_id: number; email: string; first_name: string; last_name: string; company: string; status: string }>()).results;
+    const targets: Target[] = [];
+    for (const x of local) {
+      const l = await manageLinks(env, x.subscriber_id, r.id);
+      targets.push({ table: 'nl_sends', key: x.subscriber_id, email: x.email, first_name: x.first_name, last_name: x.last_name, company: x.company, subscribed: x.status === 'subscribed',
+        unsubscribeUrl: l.unsubscribeUrl, preferencesUrl: l.preferencesUrl, viewUrl: l.viewUrl, oneClick: l.unsubscribeUrl });
+    }
+    if (targets.length < budget) {
+      const ext = (await env.DB.prepare("SELECT * FROM nl_ext_sends WHERE issue_id = ?1 AND status = 'queued' LIMIT ?2").bind(r.id, budget - targets.length)
+        .all<{ email: string; first_name: string; last_name: string; company: string; unsubscribe_url: string; preferences_url: string; one_click_url: string }>()).results;
+      for (const x of ext) {
+        targets.push({ table: 'nl_ext_sends', key: x.email, email: x.email, first_name: x.first_name, last_name: x.last_name, company: x.company, subscribed: true,
+          unsubscribeUrl: x.unsubscribe_url || x.one_click_url, preferencesUrl: x.preferences_url || x.unsubscribe_url, viewUrl: x.preferences_url || x.unsubscribe_url, oneClick: x.one_click_url || x.unsubscribe_url });
+      }
+    }
+
     let stop = false;
-    for (const x of batch) {
+    for (const x of targets) {
       if (stop) break;
+      const col = keyCol(x.table);
       // Claim it: a second runner finds it taken.
-      const claim = await env.DB.prepare("UPDATE nl_sends SET status = 'sending', sent_at = ?3 WHERE issue_id = ?1 AND subscriber_id = ?2 AND status = 'queued'").bind(r.id, x.subscriber_id, now).run();
+      const claim = await env.DB.prepare(`UPDATE ${x.table} SET status = 'sending', sent_at = ?3 WHERE issue_id = ?1 AND ${col} = ?2 AND status = 'queued'`).bind(r.id, x.key, now).run();
       if (!claim.meta.changes) continue;
       budget--;
-      if (x.status !== 'subscribed') {
-        await env.DB.prepare("UPDATE nl_sends SET status = 'skipped', error = 'No longer subscribed' WHERE issue_id = ?1 AND subscriber_id = ?2").bind(r.id, x.subscriber_id).run();
+      if (!x.subscribed) {
+        await env.DB.prepare(`UPDATE ${x.table} SET status = 'skipped', error = 'No longer subscribed' WHERE issue_id = ?1 AND ${col} = ?2`).bind(r.id, x.key).run();
         continue;
       }
-      const links = await manageLinks(env, x.subscriber_id, r.id);
       const copy = renderIssue({
         content, edition: r.edition, brand,
-        recipient: { firstName: x.first_name, lastName: x.last_name, company: x.company, email: x.email, ...links },
+        recipient: { firstName: x.first_name, lastName: x.last_name, company: x.company, email: x.email, unsubscribeUrl: x.unsubscribeUrl, preferencesUrl: x.preferencesUrl, viewUrl: x.viewUrl },
         sender: { name: r.from_name || s.from_name, title: so.title, email: r.from_email || sender.email, calendarUrl: so.calendarUrl }
       });
       const raw = buildMime({
         from: { name: r.from_name || s.from_name || 'Axal VC', email: r.from_email || sender.email, org: '' },
         to: [{ name: [x.first_name, x.last_name].filter(Boolean).join(' '), email: x.email, org: '' }], cc: [], bcc: [],
         subject: mergeSubject(content.subject, x), html: copy.html, text: copy.text, attachments: [],
-        headers: [['List-Unsubscribe', '<' + links.unsubscribeUrl + '>'], ['List-Unsubscribe-Post', 'List-Unsubscribe=One-Click']]
+        headers: x.oneClick ? [['List-Unsubscribe', '<' + x.oneClick + '>'], ['List-Unsubscribe-Post', 'List-Unsubscribe=One-Click']] : []
       });
       try {
         const id = await gmailSend(sender, raw);
-        await env.DB.prepare("UPDATE nl_sends SET status = 'sent', gmail_message_id = ?3, sent_at = ?4 WHERE issue_id = ?1 AND subscriber_id = ?2").bind(r.id, x.subscriber_id, id, now).run();
-        await env.DB.prepare('UPDATE nl_subscribers SET last_sent_at = ?2 WHERE id = ?1').bind(x.subscriber_id, now).run();
+        await env.DB.prepare(`UPDATE ${x.table} SET status = 'sent', gmail_message_id = ?3, sent_at = ?4 WHERE issue_id = ?1 AND ${col} = ?2`).bind(r.id, x.key, id, now).run();
+        if (x.table === 'nl_sends') await env.DB.prepare('UPDATE nl_subscribers SET last_sent_at = ?2 WHERE id = ?1').bind(x.key, now).run();
         out.sent++;
       } catch (e) {
         if (e instanceof GmailError && (e.status === 429 || e.status >= 500)) {
           // Gmail didn't take it (limit or outage): back in the queue, try on a later run.
-          await env.DB.prepare("UPDATE nl_sends SET status = 'queued', error = ?3 WHERE issue_id = ?1 AND subscriber_id = ?2").bind(r.id, x.subscriber_id, e.message.slice(0, 300)).run();
-          await env.DB.prepare('UPDATE nl_issues SET last_error = ?2 WHERE id = ?1').bind(r.id, 'Gmail is limiting sends (' + e.message.slice(0, 200) + '). The rest go out on later runs.').run();
+          await env.DB.prepare(`UPDATE ${x.table} SET status = 'queued', error = ?3 WHERE issue_id = ?1 AND ${col} = ?2`).bind(r.id, x.key, e.message.slice(0, 300)).run();
+          await env.DB.prepare('UPDATE nl_issues SET last_error = ?2 WHERE id = ?1').bind(r.id, 'The mail provider is limiting sends (' + e.message.slice(0, 200) + '). The rest go out on later runs.').run();
           stop = true;
           budget = 0;
-        } else {
-          // Refused, or the connection dropped mid-send: never retried, so nobody gets it twice.
-          await env.DB.prepare("UPDATE nl_sends SET status = 'failed', error = ?3 WHERE issue_id = ?1 AND subscriber_id = ?2").bind(r.id, x.subscriber_id, (e instanceof Error ? e.message : String(e)).slice(0, 300)).run();
+        } else if (e instanceof GmailError) {
+          // Refused: never retried.
+          await env.DB.prepare(`UPDATE ${x.table} SET status = 'failed', error = ?3 WHERE issue_id = ?1 AND ${col} = ?2`).bind(r.id, x.key, e.message.slice(0, 300)).run();
           out.failed++;
+        } else {
+          // No answer (the connection dropped): it may have gone out, so it is never resent.
+          const msg = 'No answer from the provider. Check Sent mail.';
+          if (x.table === 'nl_sends') await env.DB.prepare("UPDATE nl_sends SET status = 'failed', error = ?3 WHERE issue_id = ?1 AND subscriber_id = ?2").bind(r.id, x.key, 'Unconfirmed: ' + msg).run();
+          else await env.DB.prepare("UPDATE nl_ext_sends SET status = 'unconfirmed', error = ?3 WHERE issue_id = ?1 AND email = ?2").bind(r.id, x.key, msg).run();
+          out.unconfirmed++;
         }
       }
     }
-    const left = (await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1 AND status IN ('queued', 'sending')").bind(r.id).first<{ n: number }>())?.n || 0;
-    if (!left) {
+    const open = ((await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_sends WHERE issue_id = ?1 AND status IN ('queued', 'sending')").bind(r.id).first<{ n: number }>())?.n || 0)
+      + ((await env.DB.prepare("SELECT COUNT(*) AS n FROM nl_ext_sends WHERE issue_id = ?1 AND status IN ('queued', 'sending')").bind(r.id).first<{ n: number }>())?.n || 0);
+    if (!open) {
       await env.DB.prepare("UPDATE nl_issues SET status = 'sent', sent_at = ?2 WHERE id = ?1 AND status = 'sending'").bind(r.id, now).run();
       out.finished++;
     }
@@ -598,16 +779,30 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
   const m = req.method;
   if (path === '/api/newsletters') {
     if (m === 'GET') {
-      const rows = (await env.DB.prepare('SELECT * FROM nl_issues ORDER BY CASE status WHEN \'sending\' THEN 0 WHEN \'scheduled\' THEN 1 WHEN \'in_review\' THEN 2 ELSE 3 END, updated_at DESC LIMIT 300').all<IssueRow>()).results;
+      // Newsletters by default; ?programme=<uid> lists a programme's testing emails, ?scope=review everything awaiting approval.
+      const scope = url.searchParams.get('scope');
+      const prog = url.searchParams.get('programme');
+      const where = scope === 'review' ? "status = 'in_review'" : prog ? 'programme_uid = ?1' : 'programme_uid IS NULL';
+      const q = env.DB.prepare('SELECT * FROM nl_issues WHERE ' + where + " ORDER BY CASE status WHEN 'sending' THEN 0 WHEN 'scheduled' THEN 1 WHEN 'in_review' THEN 2 ELSE 3 END, updated_at DESC LIMIT 300");
+      const rows = (await (prog && scope !== 'review' ? q.bind(prog.slice(0, 80)) : q).all<IssueRow>()).results;
       return json({ issues: await Promise.all(rows.map(r => issueOut(env, user, r))), lists: await lists(env), you: user.memberEmail, role: user.role, canManage: isManager(user) });
     }
     if (m === 'POST') return json({ issue: await create(env, user, await readJson(req)) }, 201);
   }
   if (path === '/api/newsletters/settings') {
-    if (m === 'GET') return json({ settings: settingsOut(await getSettings(env), env) });
+    if (m === 'GET') return json({ settings: await settingsOut(await getSettings(env), env) });
     if (m === 'PUT') return json({ settings: await putSettings(env, user, await readJson(req)) });
   }
   if (path === '/api/newsletters/assist' && m === 'POST') return json(await newsletterAssist(env, user, await readJson(req)));
+  if (path === '/api/newsletters/senders' && m === 'GET') return json(await senders(env, user));
+  if (path === '/api/newsletters/audiences' && m === 'GET') return json(await linkAudiences(env));
+  if (path === '/api/newsletters/link' && m === 'POST') {
+    // "Test the link": a signed health read.
+    requireManager(user);
+    try { await link.health(env); await noteLinkRead(env, {}); return json({ ok: true, settings: await settingsOut(await getSettings(env), env) }); } catch (e) {
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
   if (path === '/api/newsletters/lists') {
     if (m === 'GET') return json({ lists: await lists(env) });
     if (m === 'POST') {
@@ -703,7 +898,7 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
       const res = await env.DB.prepare("UPDATE nl_issues SET status = 'approved', approved_hash = content_hash, approved_by = ?2, approved_at = ?3 WHERE id = ?1 AND version = ?4 AND status = 'in_review'")
         .bind(r.id, user.memberEmail, Date.now(), r.version).run();
       if (!res.meta.changes) throw new HttpError(409, 'This newsletter changed since you opened it.', 'issue_changed');
-      await event(env, 'approved', user.memberEmail + ' · version ' + r.version, r.id, null);
+      await event(env, 'approved', user.memberEmail + ' · version ' + r.version + ' · ' + r.content_hash.slice(0, 12), r.id, null);
       return json({ issue: await issueOut(env, user, await load(env, r.id), true) });
     }
     case '/reject': {
@@ -712,6 +907,7 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
       const note = str(body.note, 500);
       if (!note) throw new HttpError(400, 'Say what to change.');
       await env.DB.prepare("UPDATE nl_issues SET status = 'draft', review_requested_by = NULL, last_error = ?2 WHERE id = ?1").bind(r.id, 'Sent back by ' + user.memberEmail + ': ' + note).run();
+      await event(env, 'rejected', user.memberEmail + ' · ' + note + ' · ' + r.content_hash.slice(0, 12), r.id, null);
       return json({ issue: await issueOut(env, user, await load(env, r.id), true) });
     }
     case '/schedule': return json({ issue: await schedule(env, user, r, body) });
@@ -725,8 +921,7 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
     case '/resume': {
       requireManager(user);
       if (r.status !== 'paused') throw new HttpError(409, 'Only a paused newsletter resumes.');
-      const ids = JSON.parse(r.list_ids) as number[];
-      if (await needsApproval(env, ids) && r.approved_hash !== r.content_hash) throw new HttpError(409, 'Not approved as it is now.', 'needs_approval');
+      if (!approvedNow(r)) throw new HttpError(409, 'Not approved as it is now.', 'needs_approval');
       try { await senderToken(env, r.sender_member || ''); } catch (e) { throw new HttpError(409, e instanceof Error ? e.message : String(e), 'sender_not_connected'); }
       await env.DB.prepare(`UPDATE nl_issues SET status = CASE WHEN started_at IS NULL THEN 'scheduled' ELSE 'sending' END, last_error = NULL WHERE id = ?1`).bind(r.id).run();
       return json({ issue: await issueOut(env, user, await load(env, r.id), true) });
@@ -734,11 +929,20 @@ export async function route(req: Request, env: Env, user: User, url: URL): Promi
     case '/test': return json(await sendTest(env, user, r));
     case '/duplicate': {
       const now = Date.now();
-      const res = await env.DB.prepare(`INSERT INTO nl_issues (title, template, subject, preheader, edition, blocks, list_ids, from_email, from_name, signoff, content_hash, created_by, updated_by, created_at, updated_at)
-        SELECT title || ' (copy)', template, subject, preheader, edition, blocks, list_ids, from_email, from_name, signoff, content_hash, ?2, ?2, ?3, ?3 FROM nl_issues WHERE id = ?1`).bind(r.id, user.memberEmail, now).run();
+      const res = await env.DB.prepare(`INSERT INTO nl_issues (title, template, subject, preheader, edition, blocks, list_ids, from_email, from_name, signoff, content_hash, created_by, updated_by, created_at, updated_at, audiences, programme_uid, variant)
+        SELECT title || ' (copy)', template, subject, preheader, edition, blocks, list_ids, from_email, from_name, signoff, content_hash, ?2, ?2, ?3, ?3, audiences, programme_uid, variant FROM nl_issues WHERE id = ?1`).bind(r.id, user.memberEmail, now).run();
       return json({ issue: await issueOut(env, user, await load(env, Number(res.meta.last_row_id)), true) }, 201);
     }
-    case '/report': return json(await report(env, r));
+    case '/report': return json(await report(env, r, url.searchParams));
+    case '/defer': {
+      requireManager(user);
+      if (r.status !== 'in_review') throw new HttpError(409, 'Only a newsletter awaiting approval can be deferred.');
+      const note = str(body.note, 500);
+      if (!note) throw new HttpError(400, 'Give a reason to defer.');
+      await env.DB.prepare('UPDATE nl_issues SET last_error = ?2 WHERE id = ?1').bind(r.id, 'Deferred by ' + user.memberEmail + ': ' + note).run();
+      await event(env, 'deferred', user.memberEmail + ' · ' + note, r.id, null);
+      return json({ issue: await issueOut(env, user, await load(env, r.id), true) });
+    }
   }
   throw new HttpError(404, 'Not found');
 }

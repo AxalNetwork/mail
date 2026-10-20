@@ -7,13 +7,16 @@
  */
 
 export type TemplateId =
-  | 'brief' | 'letter' | 'spotlight' | 'founder' | 'event_invite' | 'event_recap' | 'insights' | 'announcement';
+  | 'brief' | 'letter' | 'spotlight' | 'founder' | 'event_invite' | 'event_recap' | 'insights' | 'announcement'
+  // Emails to a product-testing programme's applicants and testers.
+  | 'pt_in' | 'pt_not' | 'pt_reminder' | 'pt_survey' | 'pt_thanks';
 
 export type SystemEmailId = 'confirm' | 'welcome' | 'unsubscribed' | 'preferences_saved';
 
 export interface Item { title: string; text: string; url: string; meta: string }
 
-export type Block =
+/** A block marked hidden ("Remove section") stays in the draft but is not sent. */
+export type Block = { hidden?: boolean } & (
   | { id: string; type: 'note'; label: string; text: string; name: string; title: string }
   | { id: string; type: 'essay'; label: string; title: string; text: string; meta: string; url: string }
   | { id: string; type: 'items'; label: string; items: Item[]; footerLabel: string; footerUrl: string }
@@ -25,7 +28,7 @@ export type Block =
   | { id: string; type: 'callout'; value: string; text: string; source: string }
   | { id: string; type: 'tags'; tags: string[] }
   | { id: string; type: 'hero'; kicker: string; title: string; text: string }
-  | { id: string; type: 'divider' };
+  | { id: string; type: 'divider' });
 
 export type BlockType = Block['type'];
 

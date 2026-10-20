@@ -7,6 +7,8 @@ import { clearAuthCache } from '../auth';
 import { clearDelegationCache } from '../delegation';
 import { clearSenderCache } from '../senders';
 import { runDue } from '../sequences';
+import { runNewsletters } from '../newsletters';
+import { signRequest } from '../studioLink';
 import { clearSharedCache } from '../shared';
 import { runSnoozes, wakeReason } from '../snoozes';
 import { fromHeader } from '../mailboxes';
@@ -16,7 +18,7 @@ import type { Env } from '../env';
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql', '0014_newsletters.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql', '0014_newsletters.sql', '0015_newsletters_link.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -1521,5 +1523,170 @@ describe('approvals', () => {
     // The approver sends it; the requester can't.
     expect((await post('/api/approvals/' + a.id + '/execute', 'good', { contentHash: a.contentHash })).status).toBe(403);
     expect((await post('/api/approvals/' + a.id + '/execute', 'priya', { contentHash: a.contentHash })).status).toBe(200);
+  });
+});
+
+describe('newsletters', () => {
+  const KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, i) => i + 1)));
+  const db = () => env.DB as unknown as { exec: (s: string) => void };
+  const put = (path: string, token: string, body: unknown) => call(path, { method: 'PUT', token, headers: { Origin: ORIGIN }, body: JSON.stringify(body) });
+  type I = { id: number; status: string; version: number; contentHash: string; approved: boolean; canApprove: boolean; canSchedule: boolean; lastError: string | null; sent: number; unconfirmed: number; recipients: number; audiences: string[] };
+  const issue = async (r: Response) => ((await r.json()) as { issue: I }).issue;
+  const get = async (id: number) => issue(await call('/api/newsletters/' + id, { token: 'good' }));
+  const content = { subject: 'October at Axal VC', preheader: 'Three things', blocks: [{ id: 'b1', type: 'text', label: '', heading: 'Hello', text: 'Hi {first_name|there}, here is the news.' }] };
+
+  let studio: { calls: { path: string; ts: string | null; sig: string | null; body: string }[]; recipients: Record<string, unknown>[]; programmes: Record<string, unknown>[]; fail: boolean };
+  beforeEach(async () => {
+    env.TOKEN_ENCRYPTION_KEY = KEY;
+    env.GOOGLE_CLIENT_SECRET = 'shh';
+    env.NEWSLETTER_SIGNING_KEY = 'newsletter-signing-key-1234';
+    db().exec(`INSERT INTO members (email, name, status, role, created_at) VALUES ('julian@axal.vc', 'Julian', 'active', 'admin', 0), ('ada@axal.vc', 'Ada', 'active', 'admin', 0), ('priya@axal.vc', 'Priya', 'active', 'member', 0)`);
+    studio = { calls: [], recipients: [], programmes: [], fail: false };
+    const inner = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      const url = new URL(req.url);
+      if (url.hostname !== 'axal.vc') return inner(input, init);
+      const body = req.method === 'GET' ? '' : await req.text();
+      studio.calls.push({ path: url.pathname + url.search, ts: req.headers.get('X-Axal-Link-Timestamp'), sig: req.headers.get('X-Axal-Link-Signature'), body });
+      const { signature } = await signRequest('studio-link-secret-0123', req.method, url.pathname + url.search, Number(req.headers.get('X-Axal-Link-Timestamp')), body);
+      if (signature !== req.headers.get('X-Axal-Link-Signature')) return new Response('bad signature', { status: 401 });
+      if (studio.fail) return new Response('down', { status: 503 });
+      if (url.pathname === '/api/mail-link/audiences') return Response.json({ audiences: [{ key: 'web:brief', name: 'Website subscribers · The Axal VC Brief', count: studio.recipients.length, unsubscribed: 4, bounced: 1 }, { key: 'bad key!', name: 'x' }] });
+      if (url.pathname === '/api/mail-link/audiences/web%3Abrief/recipients') return Response.json({ items: studio.recipients, next_cursor: null });
+      if (url.pathname === '/api/mail-link/testing/programmes') return Response.json({ items: studio.programmes });
+      if (url.pathname === '/api/mail-link/testing/programmes/prg_1/applicants') return Response.json({ programme: studio.programmes[0], items: [
+        { uid: 'app_1', name: 'Lena', role: 'founder', answers: [{ answer: 'We interview users weekly.' }], status: 'picked', consented: true, email: 'lena@kestrel.example' },
+        { uid: 'app_2', name: 'Omar', role: 'investor', answers: ['Curious'], status: 'applied', consented: true, email: 'omar@harbor.example' }
+      ] });
+      if (url.pathname === '/api/mail-link/health') return Response.json({ ok: true });
+      return new Response('nope', { status: 404 });
+    }));
+    // Julian connects sending, sets the footer, and two people subscribe to The Brief.
+    expect((await post('/api/sequences/sender', 'good', { code: 'good-code' })).status).toBe(200);
+    expect((await put('/api/newsletters/settings', 'good', { postalAddress: '1 Main St, Montreal' })).status).toBe(200);
+    for (const [email, firstName] of [['lena@kestrel.example', 'Lena'], ['omar@harbor.example', 'Omar']]) {
+      expect((await post('/api/newsletters/subscribers', 'good', { email, firstName, listIds: [1], attested: true })).status).toBe(201);
+    }
+  });
+
+  async function approvedIssue(): Promise<I> {
+    const made = await issue(await post('/api/newsletters', 'priya', { template: 'brief' }));
+    const edited = await issue(await put('/api/newsletters/' + made.id, 'priya', { expectedVersion: made.version, ...content, listIds: [1] }));
+    await post('/api/newsletters/' + edited.id + '/review', 'priya', { version: edited.version, contentHash: edited.contentHash });
+    return issue(await post('/api/newsletters/' + edited.id + '/approve', 'good', { version: edited.version, contentHash: edited.contentHash }));
+  }
+
+  it('sends nothing without an approved version, and an edit needs approval again', async () => {
+    const made = await issue(await post('/api/newsletters', 'priya', { template: 'brief' }));
+    const edited = await issue(await put('/api/newsletters/' + made.id, 'priya', { expectedVersion: made.version, ...content, listIds: [1] }));
+    expect(edited.canSchedule).toBe(false);
+    expect((await post('/api/newsletters/' + edited.id + '/schedule', 'good', { version: edited.version, contentHash: edited.contentHash })).status).toBe(409);
+    await post('/api/newsletters/' + edited.id + '/review', 'priya', { version: edited.version, contentHash: edited.contentHash });
+    // Not by a member, not by the person who asked.
+    expect((await post('/api/newsletters/' + edited.id + '/approve', 'priya', { version: edited.version, contentHash: edited.contentHash })).status).toBe(403);
+    // A reason is needed to defer.
+    expect((await post('/api/newsletters/' + edited.id + '/defer', 'ada', { note: '' })).status).toBe(400);
+    expect((await issue(await post('/api/newsletters/' + edited.id + '/defer', 'ada', { note: 'After the board meeting' }))).lastError).toContain('After the board meeting');
+    const approved = await issue(await post('/api/newsletters/' + edited.id + '/approve', 'good', { version: edited.version, contentHash: edited.contentHash }));
+    expect(approved).toMatchObject({ status: 'approved', approved: true, canSchedule: true });
+    // Julian edits the approved version: it goes back to draft, and he can't approve his own edit.
+    const changed = await issue(await put('/api/newsletters/' + approved.id, 'good', { expectedVersion: approved.version, subject: 'November at Axal VC' }));
+    expect(changed).toMatchObject({ status: 'draft', approved: false });
+    await post('/api/newsletters/' + changed.id + '/review', 'good', { version: changed.version, contentHash: changed.contentHash });
+    expect((await post('/api/newsletters/' + changed.id + '/approve', 'good', { version: changed.version, contentHash: changed.contentHash })).status).toBe(403);
+    expect((await post('/api/newsletters/' + changed.id + '/approve', 'ada', { version: changed.version, contentHash: 'stale' })).status).toBe(409);
+    expect((await issue(await post('/api/newsletters/' + changed.id + '/approve', 'ada', { version: changed.version, contentHash: changed.contentHash }))).approved).toBe(true);
+  });
+
+  it('sends each person once with one-click unsubscribe, within the daily limit', async () => {
+    expect((await put('/api/newsletters/settings', 'good', { dailyLimit: 1 })).status).toBe(200);
+    const a = await approvedIssue();
+    expect((await post('/api/newsletters/' + a.id + '/schedule', 'good', { version: a.version, contentHash: a.contentHash, at: null })).status).toBe(200);
+    const now = Date.now();
+    const first = await runNewsletters(env, now);
+    expect(first).toMatchObject({ started: 1, sent: 1, limited: false });
+    expect(sends).toHaveLength(1);
+    expect(sends[0].raw).toMatch(/List-Unsubscribe: <https:\/\/mail\.axal\.vc\/api\/public\/newsletter\/unsubscribe\?t=/);
+    expect(sends[0].raw).toContain('List-Unsubscribe-Post: List-Unsubscribe=One-Click');
+    // The limit is reached: paused until tomorrow, nobody gets it twice.
+    expect((await runNewsletters(env, now + 60_000)).limited).toBe(true);
+    expect(sends).toHaveLength(1);
+    expect((await get(a.id)).lastError).toMatch(/^Paused at 1 of 2\. Resumes tomorrow/);
+    const next = await runNewsletters(env, now + 86_400_000);
+    expect(next).toMatchObject({ sent: 1, finished: 1 });
+    expect(sends.map(x => /To: .*<([^>]+)>/.exec(x.raw)![1]).sort()).toEqual(['lena@kestrel.example', 'omar@harbor.example']);
+    expect(await get(a.id)).toMatchObject({ status: 'sent', sent: 2 });
+    const rep = (await (await call('/api/newsletters/' + a.id + '/report', { token: 'good' })).json()) as { figures: Record<string, number | null> };
+    expect(rep.figures).toMatchObject({ recipients: 2, accepted: 2, failed: 0, unconfirmed: 0, replies: null });
+  });
+
+  it('marks a send with no answer as unconfirmed and never resends it', async () => {
+    const a = await approvedIssue();
+    await post('/api/newsletters/' + a.id + '/schedule', 'good', { version: a.version, contentHash: a.contentHash, at: null });
+    sendMode = ['throw', 'ok'];
+    expect(await runNewsletters(env)).toMatchObject({ unconfirmed: 1, sent: 1, finished: 1 });
+    expect(await runNewsletters(env)).toMatchObject({ sent: 0 });
+    expect(await get(a.id)).toMatchObject({ status: 'sent', unconfirmed: 1, sent: 1 });
+    const rep = (await (await call('/api/newsletters/' + a.id + '/report?status=unconfirmed', { token: 'good' })).json()) as { recipients: { status: string; detail: string }[] };
+    expect(rep.recipients).toEqual([expect.objectContaining({ status: 'unconfirmed', detail: expect.stringContaining('Check Sent mail') })]);
+  });
+
+  it('reads StudioOS lists over the signed link and sends with StudioOS’s unsubscribe links', async () => {
+    // Without the secret, nothing is read.
+    expect(await (await call('/api/newsletters/audiences', { token: 'good' })).json()).toMatchObject({ configured: false, audiences: [] });
+    env.MAIL_LINK_SECRET = 'studio-link-secret-0123';
+    studio.recipients = [
+      { email: 'Maya@Northstar.example', first_name: 'Maya', unsubscribe_url: 'https://axal.vc/newsletter/u/1', preferences_url: 'https://axal.vc/newsletter/p/1', one_click_url: 'https://axal.vc/api/newsletter/one-click/1' },
+      // Already on Mail's own list for this issue: sent once.
+      { email: 'lena@kestrel.example', first_name: 'Lena', one_click_url: 'https://axal.vc/api/newsletter/one-click/2' }
+    ];
+    const auds = (await (await call('/api/newsletters/audiences', { token: 'good' })).json()) as { audiences: { key: string; count: number }[] };
+    expect(auds.audiences).toEqual([expect.objectContaining({ key: 'web:brief', count: 2 })]);
+    expect(studio.calls[0]).toMatchObject({ path: '/api/mail-link/audiences', ts: expect.stringMatching(/^\d{10}$/), sig: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    const made = await issue(await post('/api/newsletters', 'priya', { template: 'brief' }));
+    const edited = await issue(await put('/api/newsletters/' + made.id, 'priya', { expectedVersion: made.version, ...content, listIds: [1], audiences: ['web:brief'] }));
+    expect(edited.audiences).toEqual(['web:brief']);
+    expect((await put('/api/newsletters/' + made.id, 'priya', { expectedVersion: edited.version, audiences: ['bad key!'] })).status).toBe(400);
+    await post('/api/newsletters/' + edited.id + '/review', 'priya', { version: edited.version, contentHash: edited.contentHash });
+    const a = await issue(await post('/api/newsletters/' + edited.id + '/approve', 'good', { version: edited.version, contentHash: edited.contentHash }));
+    await post('/api/newsletters/' + a.id + '/schedule', 'good', { version: a.version, contentHash: a.contentHash, at: null });
+
+    // StudioOS is down when sending starts: it waits instead of sending to part of the audience.
+    studio.fail = true;
+    expect(await runNewsletters(env)).toMatchObject({ started: 0, sent: 0 });
+    expect((await get(a.id)).lastError).toContain('Waiting for StudioOS');
+    studio.fail = false;
+    expect(await runNewsletters(env)).toMatchObject({ started: 1, sent: 3, finished: 1 });
+    const maya = sends.find(x => x.raw.includes('maya@northstar.example'))!;
+    expect(maya.raw).toContain('List-Unsubscribe: <https://axal.vc/api/newsletter/one-click/1>');
+    expect(sends.filter(x => x.raw.includes('lena@kestrel.example'))).toHaveLength(1);
+  });
+
+  it('shows product-testing programmes from StudioOS and starts their emails', async () => {
+    expect(await (await call('/api/testing/programmes', { token: 'priya' })).json()).toMatchObject({ configured: false });
+    env.MAIL_LINK_SECRET = 'studio-link-secret-0123';
+    studio.programmes = [{ uid: 'prg_1', product_name: 'Interview Planner', owner_kind: 'partner', owner_name: 'Northwind', status: 'open', places: 20, picked_count: 8, applicant_count: 31 }];
+    const l = (await (await call('/api/testing/programmes', { token: 'priya' })).json()) as { programmes: { uid: string; name: string; ownerKind: string; picked: number }[] };
+    expect(l.programmes).toEqual([expect.objectContaining({ uid: 'prg_1', name: 'Interview Planner', ownerKind: 'partner', picked: 8 })]);
+    const one = (await (await call('/api/testing/programmes/prg_1', { token: 'priya' })).json()) as { applicants: { email: string; why: string }[]; testers: { email: string }[] };
+    // Applicants never carry an address; picked testers who consented do.
+    expect(one.applicants.map(a => a.email)).toEqual(['', '']);
+    expect(one.applicants[0].why).toBe('We interview users weekly.');
+    expect(one.testers).toEqual([expect.objectContaining({ email: 'lena@kestrel.example' })]);
+    // A testing email belongs to a programme and goes to its picked testers.
+    expect((await post('/api/newsletters', 'priya', { template: 'pt_in' })).status).toBe(400);
+    const e = await issue(await post('/api/newsletters', 'priya', { template: 'pt_in', programmeUid: 'prg_1', programmeName: 'Interview Planner' }));
+    expect(e.audiences).toEqual(['testers:prg_1']);
+    const listed = (await (await call('/api/newsletters?programme=prg_1', { token: 'priya' })).json()) as { issues: { id: number }[] };
+    expect(listed.issues.map(x => x.id)).toEqual([e.id]);
+    expect(((await (await call('/api/newsletters', { token: 'priya' })).json()) as { issues: unknown[] }).issues).toEqual([]);
+  });
+
+  it('signs the canonical string StudioOS verifies', async () => {
+    const r = await signRequest('secret-0123456789', 'get', '/api/mail-link/audiences?x=1', 1760000000, '');
+    expect(r.canonical).toBe('GET\n/api/mail-link/audiences?x=1\n1760000000\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(r.signature).toMatch(/^[0-9a-f]{64}$/);
   });
 });

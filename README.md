@@ -253,13 +253,24 @@ To turn it on:
 
 ## Newsletters
 
-Workspace › Newsletters writes newsletters from the eight Axal VC templates (The Brief, Partner Letter, Portfolio Spotlight, Founder call, Event invitation, Event recap, Insights, Announcement), with a live preview (desktop, mobile, dark, images off, plain text).
+Workspace › Newsletters writes newsletters from the eight Axal VC templates (The Brief, Partner Letter, Portfolio Spotlight, Founder call, Event invitation in person or online, Event recap, Insights long-read, Announcement).
 
-- **Who does what.** Any member drafts and asks for approval. Admins edit any newsletter, manage lists, subscribers and settings, send tests, and schedule. A list marked "Needs approval" (LPs & investors) is approved by an admin other than the one who asked or edited last (a super admin may approve their own), for that exact version: any edit afterwards needs approval again.
-- **Sending.** Nothing goes out automatically. After an admin schedules a newsletter, the Worker's cron (every 10 minutes) sends it in batches from that admin's "Connect sending" grant: one email per person, each person at most once, with `List-Unsubscribe` one-click headers. Gmail limits pause the rest until a later run. Opens and clicks aren't tracked.
-- **Subscribers.** People join from the website form (double opt-in by default), or an admin adds or imports them. Without attested consent, each person gets a confirmation email first. Unsubscribed people are never added back by an import, and deleting a person keeps only a hash of their address.
-- **Website.** Paste the snippet from Newsletters › Settings into axal.vc: `<div data-axal-newsletter></div><script src="https://mail.axal.vc/api/public/newsletter/embed.js" defer></script>`. Confirmation, unsubscribe and preferences pages live under `/api/public/newsletter/` (no sign-in, signed links).
-- **Setup (owner).** Apply migration `0014_newsletters.sql` (`npm run db:migrate`). Set the `NEWSLETTER_SIGNING_KEY` secret (at least 16 characters; falls back to `TOKEN_ENCRYPTION_KEY`), and optionally `APP_URL` if the app isn't at https://mail.axal.vc. Then in Settings, add the postal address and disclaimer, and a super admin sets themselves as the sender of confirmation emails (after Connect sending).
+- **Composing.** Three steps: the template, the content (each section with its limits, a "Remove section" switch, and "Draft with the assistant", which inserts only when you click Insert), and the audience. The preview shows 600 px, 375 px, dark mode and the plain text.
+- **Approval.** Nothing is sent without an approved version. Any member drafts and asks for approval; an admin other than the one who asked or edited last approves, rejects or defers it with a reason, in Tasks & Approvals (a super admin may approve their own). The approval is bound to the content hash of the subject, content, audience and sender: any edit makes a new version that needs approval again.
+- **Sending.** After an admin schedules the approved version (or sends it now), the Worker's cron (every 10 minutes) sends it from that admin's "Connect sending" grant: one email per person, each person at most once, with `List-Unsubscribe` one-click headers, at the per-minute throttle and up to the daily limit in Newsletter settings. At the limit the send pauses and resumes the next day. A send with no answer from Gmail is "Unconfirmed" and never resent. Delivery is shown as unknown; opens and clicks aren't tracked.
+- **Audiences.** Mail's own lists (website signups, imports, people added by an admin) and, over the StudioOS link, the lists StudioOS keeps (website subscribers, members by role, investors and LPs, testers). StudioOS recipients are read when sending starts, so anyone who left since is never sent to; if StudioOS doesn't answer, the send waits.
+- **Website.** The snippet in Newsletter settings adds the signup form to axal.vc (double opt-in). Confirmation, unsubscribe and preference pages live under `/api/public/newsletter/` (no sign-in, signed links).
+
+## Product testing
+
+Workspace › Product testing shows the testing programmes Axal VC and partners run in StudioOS: places, applicants (without addresses), picked testers, and the programme's five emails (You're in, Not this time, Reminder, Survey, Thank you). Each email is written from its template, approved like a newsletter, and sent to the programme's picked testers who agreed to emails. Programmes are created, approved and staffed in StudioOS; Mail only reads them.
+
+**The StudioOS link.** Mail reads StudioOS over signed server-to-server requests (`worker/src/studioLink.ts`): `X-Axal-Link-Timestamp` (unix seconds) and `X-Axal-Link-Signature`, the hex HMAC-SHA256 of `METHOD\nPATH\nTIMESTAMP\nhex SHA-256(body)` with the shared secret. Reads: `/api/mail-link/health`, `/audiences`, `/audiences/:key/recipients?cursor=`, `/testing/programmes`, `/testing/programmes/:uid/applicants`. StudioOS's verifier is AxalNetwork/StudioOS#2257.
+
+**Setup (owner).**
+- Apply migrations `0014_newsletters.sql` and `0015_newsletters_link.sql` (`npm run db:migrate`).
+- Secrets: `NEWSLETTER_SIGNING_KEY` (at least 16 characters; falls back to `TOKEN_ENCRYPTION_KEY`), and `MAIL_LINK_SECRET` (the same value in the StudioOS Worker) to connect StudioOS. Optional vars: `APP_URL` if the app isn't at https://mail.axal.vc, `STUDIOOS_BASE_URL` if StudioOS isn't at https://axal.vc.
+- In Newsletter settings: the sending address, the postal address and the disclaimer, the daily limit and throttle, and a super admin as the sender of confirmation emails (after Connect sending).
 
 ## Bug reports
 

@@ -33,6 +33,10 @@ export interface Env {
   APP_URL?: string;
   /** Secret. Signs newsletter unsubscribe and preference links (falls back to TOKEN_ENCRYPTION_KEY). */
   NEWSLETTER_SIGNING_KEY?: string;
+  /** StudioOS address for the Mail link (default https://axal.vc). */
+  STUDIOOS_BASE_URL?: string;
+  /** Secret. Shared with StudioOS: signs Mail's reads of lists and programmes (the same value in both Workers). */
+  MAIL_LINK_SECRET?: string;
   /** Secret. Enables the assistant endpoints. */
   ANTHROPIC_API_KEY?: string;
 }
