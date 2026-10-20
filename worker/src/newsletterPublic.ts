@@ -279,9 +279,10 @@ async function preferencesPage(env: Env, req: Request, url: URL, b: Record<strin
 // ---------- website embed ----------
 
 function embedJs(env: Env): string {
-  const endpoint = appUrl(env) + BASE;
+  // The endpoint is the app's origin only, as a JS string literal that can't close the script or the string.
+  const endpoint = JSON.stringify(new URL(appUrl(env)).origin + BASE).replace(/[<>&\u2028\u2029]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
   // Plain DOM, no dependencies; text is set with textContent, never innerHTML.
-  return `(function(){"use strict";var E=${JSON.stringify(endpoint)};
+  return `(function(){"use strict";var E=${endpoint};
 function el(t,a,c){var e=document.createElement(t);for(var k in a)if(a.hasOwnProperty(k))e.setAttribute(k,a[k]);(c||[]).forEach(function(x){e.appendChild(typeof x==="string"?document.createTextNode(x):x)});return e}
 function mount(box){if(box.getAttribute("data-mounted"))return;box.setAttribute("data-mounted","1");
 var msg=el("p",{"class":"axal-nl-msg","role":"status","aria-live":"polite"});
