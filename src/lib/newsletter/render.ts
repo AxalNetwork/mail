@@ -17,8 +17,12 @@ const C = { text: '#18181b', muted: '#6b6577', faint: '#9b96a6', page: '#f4f3f7'
 
 export const TEMPLATE_NAME: Record<TemplateId, string> = {
   brief: 'The Axal VC Brief', letter: 'Partner Letter', spotlight: 'Portfolio Spotlight', founder: 'Founder call',
-  event_invite: 'Event invitation', event_recap: 'Event recap', insights: 'Insights', announcement: 'Announcement'
+  event_invite: 'Event invitation', event_recap: 'Event recap', insights: 'Insights long-read', announcement: 'Announcement',
+  pt_in: 'You’re in', pt_not: 'Not this time', pt_reminder: 'Reminder', pt_survey: 'Survey', pt_thanks: 'Thank you'
 };
+
+/** Templates for product-testing emails (not offered when starting a newsletter). */
+export const isTestingTemplate = (t: TemplateId) => t.startsWith('pt_');
 
 export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
@@ -296,7 +300,8 @@ export interface RenderInput {
 export function renderIssue({ content, edition, brand, recipient, sender }: RenderInput): Rendered {
   const t = content.template;
   const isLetter = t === 'letter';
-  const body = content.blocks.map(b => blockHtml(b, t)).join('');
+  const shown = content.blocks.filter(b => !b.hidden);
+  const body = shown.map(b => blockHtml(b, t)).join('');
   const banner = isLetter
     ? `<tr><td style="padding:0 0 12px"><div style="border:1px solid #fcd34d;background:#fffdf5;border-radius:10px;padding:10px 14px;font-family:${SANS};font-size:12.5px;line-height:1.5;color:#92400e" class="notice">Confidential, for {first_name} {last_name} at {company|your team}. Please do not forward.</div></td></tr>`
     : '';
@@ -305,7 +310,9 @@ export function renderIssue({ content, edition, brand, recipient, sender }: Rend
     : [['View in browser', '{view_in_browser_url}'], ['Manage preferences', '{preferences_url}'], ['Unsubscribe', '{unsubscribe_url}']];
   const lines = isLetter
     ? ['Questions? Reply to this email.']
-    : ['You’re receiving this because you subscribed on axal.vc or are a contact of Axal VC.'];
+    : isTestingTemplate(t)
+      ? ['You’re receiving this because you applied to test a product on axal.vc and agreed to emails about it.']
+      : ['You’re receiving this because you subscribed on axal.vc or are a contact of Axal VC.'];
   const html = page({
     subject: content.subject, preheader: content.preheader,
     headerLeft: esc(brand.fromName || 'Axal VC'),
@@ -315,7 +322,7 @@ export function renderIssue({ content, edition, brand, recipient, sender }: Rend
   const text = [
     `${brand.fromName || 'Axal VC'} · ${TEMPLATE_NAME[t]}${edition ? ' · ' + edition : ''}`,
     isLetter ? 'Confidential, for {first_name} {last_name} at {company|your team}. Please do not forward.' : '',
-    ...content.blocks.map(blockText).filter(Boolean),
+    ...shown.map(blockText).filter(Boolean),
     brand.disclaimer,
     [brand.fromName || 'Axal VC', brand.postalAddress.replace(/\n/g, ', ')].filter(Boolean).join(' · '),
     isLetter ? 'Questions? Reply to this email.\nEmail preferences: {preferences_url}' : 'View in browser: {view_in_browser_url}\nManage preferences: {preferences_url}\nUnsubscribe: {unsubscribe_url}'

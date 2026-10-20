@@ -10,6 +10,8 @@ import { CreateTaskDialog } from './CreateTaskDialog';
 import { IssuesTab } from './IssuesTab';
 import { TaskPanel } from './TaskPanel';
 import { dueText, memberName, type Member } from './TaskForm';
+import type { NewslettersApi } from '../../lib/newslettersApi';
+import { NewsletterApprovals } from '../newsletters/NewsletterApprovals';
 
 type Tab = 'tasks' | 'issues' | 'approvals' | 'notifications';
 
@@ -27,11 +29,13 @@ interface Props {
   onSeen: () => void;
   /** Open this task first (e.g. from a conversation's task chip). */
   initialTaskId?: number;
+  /** Newsletters and testing emails waiting for approval (backend). */
+  newsletters?: NewslettersApi | null;
 }
 
 const PRIORITY_ORDER: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
 
-export function TasksPage({ api, role, provider, profile, canSuggest, pendingSequences, onOpenSequences, onOpenSource, onSeen, initialTaskId }: Props) {
+export function TasksPage({ api, role, provider, profile, canSuggest, pendingSequences, onOpenSequences, onOpenSource, onSeen, initialTaskId, newsletters }: Props) {
   const superAdmin = role === 'super_admin';
   const [tab, setTab] = useState<Tab>('tasks');
   const [tasks, setTasks] = useState<Task[] | null>(null);
@@ -192,6 +196,7 @@ export function TasksPage({ api, role, provider, profile, canSuggest, pendingSeq
           onTracked={t => setTasks(l => (l ? [t, ...l] : [t]))} onOpenTask={openTask} />
       )}
 
+      {tab === 'approvals' && newsletters && <NewsletterApprovals api={newsletters} you={people.you} />}
       {tab === 'approvals' && (
         <ApprovalsTab api={api} members={people.members} you={people.you} provider={provider} profile={profile}
           pendingSequences={seqs} onOpenSequences={onOpenSequences} initialId={approvalId} onChanged={() => api.inbox().then(setNotices).catch(() => {})} />

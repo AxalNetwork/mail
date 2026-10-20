@@ -2,7 +2,7 @@ import type { Block, Item, TemplateId } from './types';
 
 /** Template ids, and a cleaner that keeps only known blocks and fields, within limits. */
 
-export const TEMPLATE_IDS: TemplateId[] = ['brief', 'letter', 'spotlight', 'founder', 'event_invite', 'event_recap', 'insights', 'announcement'];
+export const TEMPLATE_IDS: TemplateId[] = ['brief', 'letter', 'spotlight', 'founder', 'event_invite', 'event_recap', 'insights', 'announcement', 'pt_in', 'pt_not', 'pt_reminder', 'pt_survey', 'pt_thanks'];
 export const isTemplate = (v: unknown): v is TemplateId => typeof v === 'string' && (TEMPLATE_IDS as string[]).includes(v);
 
 export const MAX_BLOCKS = 40;
@@ -20,6 +20,7 @@ export function cleanBlocks(raw: unknown): Block[] {
   const out: Block[] = [];
   raw.slice(0, MAX_BLOCKS).forEach((b: Record<string, unknown>, i) => {
     const bid = id(b?.id, i);
+    const before = out.length;
     switch (b?.type) {
       case 'hero': out.push({ id: bid, type: 'hero', kicker: s(b.kicker, 80), title: s(b.title, 160), text: s(b.text, 1200) }); break;
       case 'note': out.push({ id: bid, type: 'note', label: s(b.label, 80), text: s(b.text, 12000), name: s(b.name, 80), title: s(b.title, 100) }); break;
@@ -34,6 +35,7 @@ export function cleanBlocks(raw: unknown): Block[] {
       case 'tags': out.push({ id: bid, type: 'tags', tags: (Array.isArray(b.tags) ? b.tags : []).slice(0, 6).map(t => s(t, 30)) }); break;
       case 'divider': out.push({ id: bid, type: 'divider' }); break;
     }
+    if (out.length > before && b.hidden === true) out[out.length - 1].hidden = true;
   });
   return out;
 }

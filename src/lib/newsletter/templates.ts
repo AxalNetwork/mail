@@ -23,6 +23,12 @@ export interface TemplateDef {
   subject: string;
   preheader: string;
   blocks: () => Block[];
+  /** Other starting blocks, e.g. the online version of an event invitation. */
+  variants?: Record<string, () => Block[]>;
+  /** A product-testing email (started from a programme, not from New newsletter). */
+  testing?: boolean;
+  /** Every version needs an approval, whatever the audience. */
+  locked?: boolean;
 }
 
 export const TEMPLATES: TemplateDef[] = [
@@ -40,7 +46,7 @@ export const TEMPLATES: TemplateDef[] = [
     ]
   },
   {
-    id: 'letter', name: TEMPLATE_NAME.letter, description: 'Quarterly letter to investors and LPs: qualitative only, confidential banner, approval required.',
+    id: 'letter', name: TEMPLATE_NAME.letter, locked: true, description: 'Quarterly letter to investors and LPs: qualitative only, confidential banner, approval required.',
     audience: 'LPs & investors', lists: ['lps'], subject: 'Partner Letter · [Q3 2026]', preheader: '[One line on this quarter]',
     blocks: () => [
       { id: blockId(), type: 'note', label: '[Q3 2026] · [date]', text: 'Dear {first_name|partner},\n\n[Partner letter, 400 to 800 words. Qualitative only: no returns, valuations, fund terms or anything that reads as an offer.]', name: '{sender_name}', title: '{sender_title}' },
@@ -85,7 +91,17 @@ export const TEMPLATES: TemplateDef[] = [
       { id: blockId(), type: 'items', label: 'Speakers', items: [item('[Name]', '[Title, company]'), item('[Name]', '[Title, company]')], footerLabel: '', footerUrl: '' },
       { id: blockId(), type: 'button', label: 'Request a seat', url: 'https://', secondaryLabel: 'Add to calendar', secondaryUrl: 'https://' },
       { id: blockId(), type: 'text', label: '', heading: '', text: '[Capacity: about 60 seats; we confirm requests by email.]' }
-    ]
+    ],
+    variants: {
+      online: () => [
+        { id: blockId(), type: 'hero', kicker: 'Online invitation', title: '[Event name]', text: '[One or two lines about the session.]' },
+        { id: blockId(), type: 'items', label: 'When', items: [item('[Thursday 24 October]', '', 'DATE'), item('[18:30 – 19:30] [Time zone]', '', 'TIME'), item('Online · the link comes with your confirmation', '', 'WHERE')], footerLabel: '', footerUrl: '' },
+        { id: blockId(), type: 'items', label: 'Agenda', items: [item('[Introduction]', '', '18:30'), item('[Conversation]', '', '18:40'), item('[Questions]', '', '19:10')], footerLabel: '', footerUrl: '' },
+        { id: blockId(), type: 'items', label: 'Speakers', items: [item('[Name]', '[Title, company]'), item('[Name]', '[Title, company]')], footerLabel: '', footerUrl: '' },
+        { id: blockId(), type: 'button', label: 'Register', url: 'https://', secondaryLabel: 'Add to calendar', secondaryUrl: 'https://' },
+        { id: blockId(), type: 'text', label: '', heading: '', text: '[The recording goes to everyone who registers.]' }
+      ]
+    }
   },
   {
     id: 'event_recap', name: TEMPLATE_NAME.event_recap, description: 'Sent to attendees afterwards: takeaways, photos, recording, next event.',
@@ -120,8 +136,54 @@ export const TEMPLATES: TemplateDef[] = [
       { id: blockId(), type: 'button', label: 'Read the full announcement', url: 'https://axal.vc/', secondaryLabel: '', secondaryUrl: '' },
       { id: blockId(), type: 'text', label: 'What this means for you', heading: '', text: '[For founders / LPs / the ecosystem: keep the one that matches the audience.]' }
     ]
+  },
+
+  // ---------- product testing (started from a programme) ----------
+  {
+    id: 'pt_in', name: TEMPLATE_NAME.pt_in, description: 'To picked testers: instructions and the link.', audience: 'Picked testers', lists: [], testing: true, locked: true,
+    subject: 'You’re in: test [Product name]', preheader: 'What to do, by when, and the link',
+    blocks: () => [
+      { id: blockId(), type: 'hero', kicker: 'Product testing', title: 'You’re in, {first_name|there}', text: 'Thanks for applying to test [Product name]. You’re one of [n] testers.' },
+      { id: blockId(), type: 'items', label: 'What to do', items: [item('[First task]', '[What it involves]'), item('[Second task]', '[What it involves]'), item('[Share feedback]', '[How and where]')], footerLabel: '', footerUrl: '' },
+      { id: blockId(), type: 'items', label: 'When', items: [item('[date] – [date]', 'About [2] hours over [2] weeks', 'DATES')], footerLabel: '', footerUrl: '' },
+      { id: blockId(), type: 'button', label: 'Start testing', url: 'https://', secondaryLabel: '', secondaryUrl: '' },
+      { id: blockId(), type: 'text', label: '', heading: '', text: 'Questions? Reply to this email.' }
+    ]
+  },
+  {
+    id: 'pt_not', name: TEMPLATE_NAME.pt_not, description: 'To applicants who weren’t picked.', audience: 'Not picked', lists: [], testing: true, locked: true,
+    subject: 'About testing [Product name]', preheader: 'Thanks for applying',
+    blocks: () => [
+      { id: blockId(), type: 'text', label: '', heading: 'Thanks for applying, {first_name|there}', text: 'We had more applications than places for [Product name], so we couldn’t include you this time.\n\nWe’ll let you know when the next programme opens.' }
+    ]
+  },
+  {
+    id: 'pt_reminder', name: TEMPLATE_NAME.pt_reminder, description: 'Halfway through testing.', audience: 'Picked testers', lists: [], testing: true, locked: true,
+    subject: 'Halfway through testing [Product name]', preheader: 'What’s left, and the deadline',
+    blocks: () => [
+      { id: blockId(), type: 'text', label: '', heading: 'Halfway there, {first_name|there}', text: 'Testing [Product name] ends on [date]. If you haven’t yet: [the task that’s left].' },
+      { id: blockId(), type: 'button', label: 'Continue testing', url: 'https://', secondaryLabel: '', secondaryUrl: '' }
+    ]
+  },
+  {
+    id: 'pt_survey', name: TEMPLATE_NAME.pt_survey, description: 'The feedback form when testing ends.', audience: 'Picked testers', lists: [], testing: true, locked: true,
+    subject: 'Your feedback on [Product name]', preheader: 'About [5] minutes',
+    blocks: () => [
+      { id: blockId(), type: 'text', label: '', heading: 'How was it, {first_name|there}?', text: 'Testing [Product name] has ended. The feedback form takes about [5] minutes.' },
+      { id: blockId(), type: 'button', label: 'Give feedback', url: 'https://', secondaryLabel: '', secondaryUrl: '' }
+    ]
+  },
+  {
+    id: 'pt_thanks', name: TEMPLATE_NAME.pt_thanks, description: 'After the programme closes.', audience: 'Picked testers', lists: [], testing: true, locked: true,
+    subject: 'Thank you for testing [Product name]', preheader: 'What happens next',
+    blocks: () => [
+      { id: blockId(), type: 'text', label: '', heading: 'Thank you, {first_name|there}', text: 'Your feedback is shaping [Product name]. [What the team changed or will change.]' }
+    ]
   }
 ];
+
+/** The templates a new newsletter can start from. */
+export const NEWSLETTER_TEMPLATES = TEMPLATES.filter(t => !t.testing);
 
 export const templateDef = (id: TemplateId) => TEMPLATES.find(t => t.id === id) || TEMPLATES[0];
 
@@ -144,9 +206,21 @@ export function emptyBlock(type: Block['type']): Block {
   }
 }
 
+/** Every text value in the blocks (not the JSON around them), for placeholder checks. */
+export function blockStrings(blocks: Block[]): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'id' && k !== 'type') walk(x);
+  };
+  walk(blocks);
+  return out;
+}
+
 /** Text an author can still see in the copy that looks like an unfilled placeholder. */
 export function placeholders(blocks: Block[], subject: string, preheader: string): string[] {
-  const all = JSON.stringify(blocks) + subject + preheader;
+  const all = [...blockStrings(blocks), subject, preheader].join('\n');
   // Bracketed text that isn't the label of a [link](url).
   return [...new Set(all.match(/\[[^\]\n]{2,60}\](?!\()/g) || [])].slice(0, 10);
 }
