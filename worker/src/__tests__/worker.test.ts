@@ -18,7 +18,7 @@ import type { Env } from '../env';
 /** Minimal D1 over node:sqlite, enough for prepare/bind/all/first/run (+ exec for seeding). */
 function fakeD1(): D1Database {
   const db = new DatabaseSync(':memory:');
-  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql', '0014_newsletters.sql', '0015_newsletters_link.sql']) {
+  for (const f of ['0001_notes.sql', '0002_members.sql', '0003_roles.sql', '0004_mailboxes.sql', '0005_bug_reports.sql', '0006_sequences.sql', '0007_internal.sql', '0008_automations.sql', '0009_contacts.sql', '0010_shared_inboxes.sql', '0011_snoozes.sql', '0012_documents.sql', '0013_tasks.sql', '0014_newsletters.sql', '0015_newsletters_link.sql', '0016_newsletter_outcomes.sql']) {
     db.exec(readFileSync(fileURLToPath(new URL('../../migrations/' + f, import.meta.url).href), 'utf8'));
   }
   return {
@@ -1564,7 +1564,7 @@ describe('newsletters', () => {
     }));
     // Julian connects sending, sets the footer, and two people subscribe to The Brief.
     expect((await post('/api/sequences/sender', 'good', { code: 'good-code' })).status).toBe(200);
-    expect((await put('/api/newsletters/settings', 'good', { postalAddress: '1 Main St, Montreal' })).status).toBe(200);
+    expect((await put('/api/newsletters/settings', 'boss', { postalAddress: '1 Main St, Montreal' })).status).toBe(200);
     for (const [email, firstName] of [['lena@kestrel.example', 'Lena'], ['omar@harbor.example', 'Omar']]) {
       expect((await post('/api/newsletters/subscribers', 'good', { email, firstName, listIds: [1], attested: true })).status).toBe(201);
     }
@@ -1600,7 +1600,7 @@ describe('newsletters', () => {
   });
 
   it('sends each person once with one-click unsubscribe, within the daily limit', async () => {
-    expect((await put('/api/newsletters/settings', 'good', { dailyLimit: 1 })).status).toBe(200);
+    expect((await put('/api/newsletters/settings', 'boss', { dailyLimit: 1 })).status).toBe(200);
     const a = await approvedIssue();
     expect((await post('/api/newsletters/' + a.id + '/schedule', 'good', { version: a.version, contentHash: a.contentHash, at: null })).status).toBe(200);
     const now = Date.now();
